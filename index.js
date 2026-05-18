@@ -16,7 +16,8 @@ const allowedOrigins = [
   'https://localhost:5173',
   'http://localhost:5174',
   'http://localhost:3000',
-  'https://loankp-production.up.railway.app'
+  'http://loannew.softwaredemolive.live',
+  'https://loannew.softwaredemolive.live',
 ];
 
 app.use(cors({
