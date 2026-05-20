@@ -2,6 +2,8 @@ const express = require('express');
 const router = express.Router();
 const hrController = require('../controllers/hrController');
 const authenticateToken = require('../middleware/auth');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 router.use(authenticateToken);
 
@@ -15,5 +17,11 @@ router.get('/employees', hrController.getEmployees);
 router.patch('/verifications/:id/status', hrController.updateVerificationStatus);
 router.get('/company', hrController.getCompanyProfile);
 router.patch('/company', hrController.updateCompanyProfile);
+router.get('/remittances', hrController.getRemittances);
+
+// Deduction schedule endpoints
+router.post('/upload-deductions', upload.single('file'), hrController.uploadDeductions);
+router.get('/uploaded-schedules', hrController.getUploadedSchedules);
 
 module.exports = router;
+

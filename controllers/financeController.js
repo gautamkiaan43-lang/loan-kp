@@ -3,16 +3,16 @@ const prisma = require('../config/db');
 exports.getStats = async (req, res) => {
   try {
     const loans = await prisma.loan.findMany();
-    
-    const pendingPayouts = loans.filter(l => 
-      l.stage === 'ADMIN_APPROVAL_PENDING' || 
-      l.stage === 'ADMIN_APPROVAL' || 
+
+    const pendingPayouts = loans.filter(l =>
+      l.stage === 'ADMIN_APPROVAL_PENDING' ||
+      l.stage === 'ADMIN_APPROVAL' ||
       l.stage === 'FINANCE_PENDING' ||
       l.status.toLowerCase().includes('admin approved') ||
       l.status.toLowerCase().includes('credit approved')
     );
 
-    const disbursedLoans = loans.filter(l => 
+    const disbursedLoans = loans.filter(l =>
       ['ACTIVE', 'DISBURSED', 'PAID'].includes(l.stage) ||
       ['active', 'disbursed', 'paid'].includes(l.status.toLowerCase())
     );
@@ -126,7 +126,7 @@ exports.getSettlementEligibleLoans = async (req, res) => {
 
 exports.executeSettlement = async (req, res) => {
   const { sourceLoanId, targetLoanId, amount, notes } = req.body;
-  
+
   try {
     const updatedTarget = await prisma.loan.update({
       where: { reference: targetLoanId },
@@ -164,7 +164,7 @@ exports.getSettlementHistory = async (req, res) => {
       // Extract IDs from note: "Loan settled by APP-XXX. Amount: RYYY. Notes: ZZZ"
       const sourceMatch = log.note.match(/by ([A-Z0-9-]+)/i);
       const amountMatch = log.note.match(/Amount: R([\d.]+)/);
-      
+
       return {
         date: log.createdAt,
         sourceId: sourceMatch ? sourceMatch[1] : 'N/A',
@@ -287,7 +287,7 @@ exports.getCompanies = async (req, res) => {
     });
 
     const explicitCompanies = await prisma.company.findMany();
-    
+
     const companyNames = new Set();
     userCompanies.forEach(u => companyNames.add(u.company));
     explicitCompanies.forEach(c => companyNames.add(c.name));
@@ -345,10 +345,72 @@ exports.getExpectedDeductions = async (req, res) => {
   }
 };
 
+exports.getUploadedDeductions = async (req, res) => {
+  const { company, period } = req.query;
+  try {
+    const query = { company };
+    if (period) {
+      query.period = period;
+    }
+    const schedule = await prisma.deductionschedule.findFirst({
+      where: query,
+      orderBy: { createdAt: 'desc' }
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: 'No uploaded deduction schedule found for this company/period.' });
+    }
+
+    const formatted = [];
+    for (const item of schedule.details) {
+      const numericPart = String(item.employeeNumber || '').replace(/\D/g, '');
+      const searchUserId = isNaN(parseInt(numericPart)) || numericPart === '' ? -1 : parseInt(numericPart);
+
+      const loan = await prisma.loan.findFirst({
+        where: {
+          company,
+          status: { in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED'] },
+          OR: [
+            { employeeName: { contains: item.employeeName } },
+            { employeeEmail: { contains: item.employeeNumber } },
+            { userId: searchUserId }
+          ]
+        },
+        include: {
+          installment: {
+            where: { status: 'PENDING' }
+          }
+        }
+      });
+
+      formatted.push({
+        id: loan ? loan.reference : ('N/A - ' + item.employeeNumber),
+        name: item.employeeName,
+        expected: loan && loan.installment[0] ? loan.installment[0].amount : 0,
+        received: item.amount,
+        status: loan && loan.installment[0] && loan.installment[0].amount === item.amount ? 'Matched' : 'Mismatch',
+        employeeNumber: item.employeeNumber
+      });
+    }
+
+    res.json({
+      scheduleId: schedule.id,
+      fileName: schedule.fileName,
+      period: schedule.period,
+      frequency: schedule.frequency,
+      data: formatted
+    });
+  } catch (error) {
+    console.error('Get Uploaded Deductions Error:', error);
+    res.status(500).json({ message: 'Failed to fetch uploaded deductions.' });
+  }
+};
+
 exports.processBatch = async (req, res) => {
-  const { company, batchData } = req.body;
+  const { company, batchData, scheduleId } = req.body;
   try {
     for (const item of batchData) {
+      if (item.id.startsWith('N/A')) continue;
       const loan = await prisma.loan.findFirst({
         where: { reference: item.id },
         include: { installment: true }
@@ -359,7 +421,11 @@ exports.processBatch = async (req, res) => {
         if (pendingInst) {
           await prisma.installment.update({
             where: { id: pendingInst.id },
-            data: { status: 'RECEIVED', updatedAt: new Date() }
+            data: { 
+              status: 'RECEIVED', 
+              paidAmount: item.received,
+              updatedAt: new Date() 
+            }
           });
 
           await prisma.auditlog.create({
@@ -374,12 +440,20 @@ exports.processBatch = async (req, res) => {
       }
     }
 
+    if (scheduleId) {
+      await prisma.deductionschedule.update({
+        where: { id: parseInt(scheduleId) },
+        data: { status: 'RECONCILED', updatedAt: new Date() }
+      });
+    }
+
     res.json({ message: 'Batch payroll processed successfully' });
   } catch (error) {
     console.error('Process Batch Error:', error);
     res.status(500).json({ message: 'Failed to process batch' });
   }
 };
+
 
 exports.getReportCompanies = async (req, res) => {
   try {
@@ -406,6 +480,16 @@ exports.getReportCompanies = async (req, res) => {
 
 exports.getReportsData = async (req, res) => {
   const { type, company, range } = req.query;
+  
+  const getLoanDivision = (loan) => {
+    try {
+      const meta = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : loan.metadata;
+      return meta?.employmentInfo?.employerDivision || 'Unassigned';
+    } catch (e) {
+      return 'Unassigned';
+    }
+  };
+
   try {
     let loans = [];
     const filter = {};
@@ -430,6 +514,7 @@ exports.getReportsData = async (req, res) => {
             id: l.reference,
             name: l.employeeName,
             company: l.company,
+            division: getLoanDivision(l),
             amount: totalOverdue,
             date: overdueInsts[0].dueDate,
             status: 'Overdue'
@@ -453,6 +538,7 @@ exports.getReportsData = async (req, res) => {
             id: l.reference,
             name: l.employeeName,
             company: l.company,
+            division: getLoanDivision(l),
             amount: currentInst.amount,
             date: currentInst.dueDate,
             status: 'Pending Remittance'
@@ -471,6 +557,7 @@ exports.getReportsData = async (req, res) => {
         id: l.reference,
         name: l.employeeName,
         company: l.company,
+        division: getLoanDivision(l),
         amount: l.amount,
         date: l.createdAt,
         status: l.status || 'Approved'
@@ -480,6 +567,47 @@ exports.getReportsData = async (req, res) => {
   } catch (error) {
     console.error('Fetch Report Data Error:', error);
     res.status(500).json({ message: 'Failed to fetch report data' });
+  }
+};
+
+exports.getCompanyDivisions = async (req, res) => {
+  const { companyName } = req.query;
+  try {
+    if (!companyName) {
+      return res.json([]);
+    }
+    const divisionsSet = new Set();
+    
+    // 1. Fetch from company model
+    const company = await prisma.company.findUnique({
+      where: { name: companyName }
+    });
+    if (company && company.divisions) {
+      const divisionsList = typeof company.divisions === 'string' 
+        ? JSON.parse(company.divisions) 
+        : (company.divisions || []);
+      divisionsList.forEach(d => {
+        const name = typeof d === 'string' ? d : (d.name || d);
+        if (name) divisionsSet.add(name);
+      });
+    }
+    
+    // 2. Fetch from existing loans for this company
+    const loans = await prisma.loan.findMany({
+      where: { company: companyName }
+    });
+    loans.forEach(l => {
+      const meta = typeof l.metadata === 'string' ? JSON.parse(l.metadata) : (l.metadata || {});
+      const divName = meta.employmentInfo?.employerDivision;
+      if (divName) {
+        divisionsSet.add(divName);
+      }
+    });
+
+    res.json(Array.from(divisionsSet));
+  } catch (error) {
+    console.error('Get Company Divisions Error:', error);
+    res.json([]);
   }
 };
 

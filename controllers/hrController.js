@@ -1,4 +1,6 @@
 const prisma = require('../config/db');
+const xlsx = require('xlsx');
+
 
 exports.getNewLoansReport = async (req, res) => {
   if (req.user.role !== 'hr' && req.user.role !== 'admin') {
@@ -13,24 +15,24 @@ exports.getNewLoansReport = async (req, res) => {
         company: req.user.role === 'hr' ? req.user.company : undefined,
         status: { in: ['DISBURSED', 'ACTIVE'] },
         updatedAt: {
-            gte: startDate ? new Date(startDate) : undefined,
-            lte: endDate ? (new Date(endDate + 'T23:59:59')) : undefined
+          gte: startDate ? new Date(startDate) : undefined,
+          lte: endDate ? (new Date(endDate + 'T23:59:59')) : undefined
         }
       },
       include: {
         user: { select: { name: true, email: true, avatarUrl: true } }
       }
     });
-
     res.json(loans.map(l => ({
       id: l.reference,
       name: l.employeeName || l.user?.name || 'Unknown',
       company: l.company,
       amount: l.amount,
-      salary: l.amount, 
+      salary: l.amount,
       date: l.updatedAt,
       status: l.status,
-      idNumber: 'EMP-' + l.userId
+      idNumber: 'EMP-' + l.userId,
+      metadata: l.metadata
     })));
   } catch (error) {
     console.error(error);
@@ -51,7 +53,7 @@ exports.getOverdueInstallments = async (req, res) => {
         },
         OR: [
           { status: 'OVERDUE' },
-          { 
+          {
             status: 'PENDING',
             dueDate: { lt: new Date() }
           }
@@ -63,7 +65,6 @@ exports.getOverdueInstallments = async (req, res) => {
         }
       }
     });
-
     res.json(overdueInstallments.map(i => ({
       id: i.reference,
       loanReference: i.loan.reference,
@@ -71,10 +72,12 @@ exports.getOverdueInstallments = async (req, res) => {
       email: i.loan.user?.email || 'Unknown',
       company: i.loan.company,
       amount: i.amount,
-      outstandingAmount: i.amount, 
+      outstandingAmount: i.amount,
       dueDate: i.dueDate,
       status: i.status,
-      recoveryStatus: i.status === 'OVERDUE' ? 'IN_ARREARS' : 'PENDING'
+      recoveryStatus: i.status === 'OVERDUE' ? 'IN_ARREARS' : 'PENDING',
+      metadata: i.loan.metadata,
+      note: i.note
     })));
   } catch (error) {
     console.error(error);
@@ -93,7 +96,7 @@ exports.updateOverdueNote = async (req, res) => {
   try {
     const updated = await prisma.installment.update({
       where: { reference },
-      data: { 
+      data: {
         note,
         updatedAt: new Date()
       }
@@ -128,7 +131,7 @@ exports.getActivityStats = async (req, res) => {
     const totalRequests = loans.length;
     const approvedCount = loans.filter(l => l.status.toLowerCase().includes('approved') || l.status.toLowerCase() === 'paid').length;
     const rejectedCount = loans.filter(l => l.status.toLowerCase().includes('rejected') || l.status.toLowerCase() === 'declined').length;
-    
+
     // Monthly aggregation
     const monthlyActivity = Array.from({ length: 12 }, (_, i) => ({
       month: `M${i + 1}`,
@@ -180,11 +183,11 @@ exports.getDashboardData = async (req, res) => {
 
     const [pendingCount, approvedThisWeek, rejectedCount, priorityQueue] = await Promise.all([
       prisma.loan.count({ where: { stage: 'SUBMITTED' } }),
-      prisma.loan.count({ 
-        where: { 
+      prisma.loan.count({
+        where: {
           stage: { notIn: ['SUBMITTED', 'REJECTED'] },
           updatedAt: { gte: startOfWeek }
-        } 
+        }
       }),
       prisma.loan.count({ where: { status: 'rejected' } }),
       prisma.loan.findMany({
@@ -239,9 +242,9 @@ exports.getVerifications = async (req, res) => {
     res.json(loans.map(l => ({
       id: l.id,
       reference: l.reference,
-      name: (l.employeeName && l.employeeName !== 'Unknown') 
-            ? l.employeeName 
-            : (l.metadata?.personalInfo?.name ? `${l.metadata.personalInfo.name} ${l.metadata.personalInfo.surname}` : (l.user?.name || 'Anonymous')),
+      name: (l.employeeName && l.employeeName !== 'Unknown')
+        ? l.employeeName
+        : (l.metadata?.personalInfo?.name ? `${l.metadata.personalInfo.name} ${l.metadata.personalInfo.surname}` : (l.user?.name || 'Anonymous')),
       avatarUrl: l.user?.avatarUrl,
       company: l.company,
       amount: l.amount,
@@ -274,30 +277,30 @@ exports.getEmployees = async (req, res) => {
     });
 
     const activeAppsCount = await prisma.loan.count({
-        where: {
-            stage: { in: ['SUBMITTED', 'HR_VERIFICATION'] }
-        }
+      where: {
+        stage: { in: ['SUBMITTED', 'HR_VERIFICATION'] }
+      }
     });
 
     res.json({
-        employees: employees.map(u => ({
-            id: `EMP-${u.id}`,
-            realId: u.id,
-            name: u.name || 'Unknown',
-            avatarUrl: u.avatarUrl,
-            company: u.company,
-            dept: 'Operations', // Placeholder as schema doesn't have dept
-            role: 'Employee',
-            status: u.status,
-            email: u.email,
-            activeLoan: u.loan[0] || null
-        })),
-        stats: {
-            totalStaff: employees.length,
-            activeApplications: activeAppsCount,
-            deptCoverage: 5, 
-            complianceRate: 100 
-        }
+      employees: employees.map(u => ({
+        id: `EMP-${u.id}`,
+        realId: u.id,
+        name: u.name || 'Unknown',
+        avatarUrl: u.avatarUrl,
+        company: u.company,
+        dept: 'Operations', // Placeholder as schema doesn't have dept
+        role: 'Employee',
+        status: u.status,
+        email: u.email,
+        activeLoan: u.loan[0] || null
+      })),
+      stats: {
+        totalStaff: employees.length,
+        activeApplications: activeAppsCount,
+        deptCoverage: 5,
+        complianceRate: 100
+      }
     });
   } catch (error) {
     console.error(error);
@@ -332,7 +335,7 @@ exports.updateVerificationStatus = async (req, res) => {
       };
       auditAction = 'HR_VERIFY_REJECTED';
     } else if (action === 'FORWARD') {
-       updateData = {
+      updateData = {
         status: 'Forwarded to Credit',
         stage: 'CREDIT_PENDING',
         updatedAt: new Date()
@@ -388,19 +391,20 @@ exports.getRemittances = async (req, res) => {
         }
       }
     });
-
     res.json(installments.map(i => ({
       id: i.reference,
       loanReference: i.loan.reference,
-      name: (i.loan.employeeName && i.loan.employeeName !== 'Unknown') 
-            ? i.loan.employeeName 
-            : (i.loan.metadata?.personalInfo?.name ? `${i.loan.metadata.personalInfo.name} ${i.loan.metadata.personalInfo.surname}` : (i.loan.user?.name || 'Anonymous')),
+      name: (i.loan.employeeName && i.loan.employeeName !== 'Unknown')
+        ? i.loan.employeeName
+        : (i.loan.metadata?.personalInfo?.name ? `${i.loan.metadata.personalInfo.name} ${i.loan.metadata.personalInfo.surname}` : (i.loan.user?.name || 'Anonymous')),
       email: i.loan.employeeEmail || i.loan.user?.email || 'Unknown',
       avatarUrl: i.loan.user?.avatarUrl,
       company: i.loan.company,
       amount: i.amount,
       date: i.dueDate,
-      status: i.status
+      status: i.status,
+      metadata: i.loan.metadata,
+      note: i.note
     })));
   } catch (error) {
     console.error(error);
@@ -416,7 +420,7 @@ exports.getCompanyProfile = async (req, res) => {
   const companyName = req.user.role === 'hr' ? req.user.company : req.query.name;
 
   if (!companyName) {
-      return res.status(400).json({ message: 'Company name required. Your user account may not have a company assigned.' });
+    return res.status(400).json({ message: 'Company name required. Your user account may not have a company assigned.' });
   }
 
   try {
@@ -471,3 +475,112 @@ exports.updateCompanyProfile = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+exports.getRemittances = async (req, res) => {
+  if (req.user.role !== 'hr' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  try {
+    const loans = await prisma.loan.findMany({
+      where: {
+        company: req.user.role === 'hr' ? req.user.company : undefined,
+        status: { in: ['DISBURSED', 'ACTIVE', 'Active', 'Disbursed'] }
+      },
+      include: {
+        user: { select: { name: true, email: true, avatarUrl: true } }
+      }
+    });
+
+    res.json(loans.map(l => ({
+      id: l.reference,
+      loanReference: l.reference,
+      name: l.employeeName || l.user?.name || 'Unknown',
+      email: l.user?.email || 'N/A',
+      company: l.company,
+      amount: l.amount / 10,
+      date: l.updatedAt,
+      status: 'PAID',
+      metadata: l.metadata
+    })));
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.uploadDeductions = async (req, res) => {
+  if (req.user.role !== 'hr' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const { company, period, frequency } = req.body;
+
+  if (!req.file) {
+    return res.status(400).json({ message: 'Please upload a CSV or Excel file.' });
+  }
+
+  try {
+    const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
+    const sheetName = workbook.SheetNames[0];
+    const worksheet = workbook.Sheets[sheetName];
+    const rawData = xlsx.utils.sheet_to_json(worksheet);
+
+    if (rawData.length === 0) {
+      return res.status(400).json({ message: 'The uploaded file is empty.' });
+    }
+
+    const parsedRows = rawData.map(row => {
+      const empNoKey = Object.keys(row).find(k => k.toLowerCase().includes('employee') || k.toLowerCase().includes('emp') || k.toLowerCase().includes('id'));
+      const nameKey = Object.keys(row).find(k => k.toLowerCase().includes('name'));
+      const amountKey = Object.keys(row).find(k => k.toLowerCase().includes('amount') || k.toLowerCase().includes('deduct') || k.toLowerCase().includes('repay'));
+
+      const employeeNumber = empNoKey ? String(row[empNoKey]).trim() : 'Unknown';
+      const employeeName = nameKey ? String(row[nameKey]).trim() : 'Unknown';
+      const amount = amountKey ? parseFloat(row[amountKey]) || 0 : 0;
+
+      return {
+        employeeNumber,
+        employeeName,
+        amount
+      };
+    });
+
+    const schedule = await prisma.deductionschedule.create({
+      data: {
+        company: company || req.user.company,
+        period,
+        frequency,
+        fileName: req.file.originalname,
+        uploadedBy: req.user.email,
+        details: parsedRows
+      }
+    });
+
+    res.json({ message: 'Deduction schedule uploaded and parsed successfully', schedule });
+  } catch (error) {
+    console.error('Upload Deductions Error:', error);
+    res.status(500).json({ message: 'Failed to process file upload.' });
+  }
+};
+
+exports.getUploadedSchedules = async (req, res) => {
+  if (req.user.role !== 'hr' && req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const company = req.user.role === 'hr' ? req.user.company : req.query.company;
+
+  try {
+    const schedules = await prisma.deductionschedule.findMany({
+      where: { company },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(schedules);
+  } catch (error) {
+    console.error('Get Uploaded Schedules Error:', error);
+    res.status(500).json({ message: 'Failed to fetch uploaded schedules.' });
+  }
+};
+

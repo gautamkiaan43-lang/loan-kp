@@ -85,3 +85,17 @@ model company {
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
 }
+
+model deductionschedule {
+  id          Int      @id @default(autoincrement())
+  company     String
+  period      String
+  frequency   String
+  fileName    String
+  status      String   @default("PENDING")
+  uploadedBy  String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  details     Json
+}
+

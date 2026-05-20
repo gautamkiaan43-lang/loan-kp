@@ -8,5 +8,6 @@ router.use(authenticateToken);
 router.get('/dashboard', employeeController.getDashboard);
 router.get('/statements', employeeController.getStatements);
 router.get('/loans/latest', employeeController.getLatestLoan);
+router.post('/loans/counter-offer/decision', employeeController.decideCounterOffer);
 
 module.exports = router;

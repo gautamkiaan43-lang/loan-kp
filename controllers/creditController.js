@@ -271,3 +271,54 @@ exports.updateStatus = async (req, res) => {
     res.status(500).json({ message: 'Failed to update status' });
   }
 };
+
+exports.makeCounterOffer = async (req, res) => {
+  const { loanId, amount, term } = req.body;
+
+  try {
+    const loan = await prisma.loan.findUnique({
+      where: { reference: loanId }
+    });
+
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan not found' });
+    }
+
+    const originalMetadata = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : (loan.metadata || {});
+    const updatedMetadata = {
+      ...originalMetadata,
+      counterOffer: {
+        amount: parseFloat(amount),
+        term: String(term),
+        originalAmount: loan.amount,
+        originalTerm: originalMetadata.loanRequest?.term || '12',
+        proposedAt: new Date().toISOString()
+      }
+    };
+
+    const updatedLoan = await prisma.loan.update({
+      where: { reference: loanId },
+      data: {
+        status: 'Counter Offer',
+        stage: 'COUNTER_OFFER',
+        metadata: updatedMetadata,
+        updatedAt: new Date()
+      }
+    });
+
+    // Log the action
+    await prisma.auditlog.create({
+      data: {
+        action: 'CREDIT_COUNTER_OFFER',
+        user: req.user.name || req.user.email,
+        note: `Proposed counter-offer: R ${parseFloat(amount).toLocaleString()} over ${term} months`,
+        entityId: loanId
+      }
+    });
+
+    res.json({ message: 'Counter-offer proposed successfully', loan: updatedLoan });
+  } catch (error) {
+    console.error('Counter Offer Error:', error);
+    res.status(500).json({ message: 'Failed to process counter-offer' });
+  }
+};

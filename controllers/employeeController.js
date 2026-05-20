@@ -7,6 +7,7 @@ const mapStageToFriendlyText = (stage, status) => {
   if (s.includes('HR_PENDING')) return 'HR Verification Pending';
   if (s.includes('DISBURSED') || s.includes('ACTIVE')) return 'Active';
   if (s.includes('REJECTED') || s.includes('DECLINED')) return 'Declined';
+  if (s.includes('COUNTER_OFFER') || s.includes('COUNTER OFFER')) return 'Counter Offer';
   return stage || status || 'Pending';
 };
 
@@ -175,18 +176,83 @@ exports.getLatestLoan = async (req, res) => {
       return res.status(404).json({ message: 'No applications found' });
     }
 
+    const metadata = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : (loan.metadata || {});
     res.json({
       id: loan.id,
       reference: loan.reference,
       amount: loan.amount,
-      status: loan.status.toUpperCase(),
+      status: loan.status,
       stage: loan.stage,
       date: loan.createdAt,
-      metadata: loan.metadata,
-      documentUrls: loan.documentUrls
+      metadata: metadata,
+      documentUrls: loan.documentUrls,
+      counterOfferAmount: metadata.counterOffer?.amount || null,
+      counterOfferTerm: metadata.counterOffer?.term || null
     });
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.decideCounterOffer = async (req, res) => {
+  const { loanId, decision } = req.body;
+
+  try {
+    const loan = await prisma.loan.findFirst({
+      where: { 
+        id: Number(loanId),
+        userId: req.user.id
+      }
+    });
+
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan not found' });
+    }
+
+    const metadata = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : (loan.metadata || {});
+    if (!metadata.counterOffer) {
+      return res.status(400).json({ message: 'No counter-offer found for this application' });
+    }
+
+    const isAccept = decision === 'ACCEPT' || decision === 'APPROVE';
+    const newAmount = isAccept ? metadata.counterOffer.amount : loan.amount;
+    
+    if (isAccept) {
+      if (!metadata.loanRequest) {
+        metadata.loanRequest = {};
+      }
+      metadata.loanRequest.term = String(metadata.counterOffer.term);
+      metadata.counterOfferAccepted = true;
+    }
+    
+    // Update loan status
+    const updatedLoan = await prisma.loan.update({
+      where: { id: loan.id },
+      data: {
+        amount: newAmount,
+        status: isAccept ? 'Credit Approved' : 'Credit Rejected',
+        stage: isAccept ? 'ADMIN_APPROVAL' : 'REJECTED',
+        metadata: metadata,
+        updatedAt: new Date()
+      }
+    });
+
+    // Log the action
+    await prisma.auditlog.create({
+      data: {
+        action: isAccept ? 'EMPLOYEE_ACCEPT_COUNTER' : 'EMPLOYEE_DECLINE_COUNTER',
+        user: req.user.name || req.user.email,
+        note: isAccept 
+          ? `Accepted counter-offer: R ${newAmount.toLocaleString()}` 
+          : `Declined counter-offer`,
+        entityId: String(loanId)
+      }
+    });
+
+    res.json({ message: `Counter-offer ${isAccept ? 'accepted' : 'declined'} successfully`, loan: updatedLoan });
+  } catch (error) {
+    console.error('Decide Counter Offer Error:', error);
+    res.status(500).json({ message: 'Failed to process decision' });
   }
 };

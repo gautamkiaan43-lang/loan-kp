@@ -17,8 +17,10 @@ router.get('/writeoff-ledger', financeController.getWriteoffLedger);
 router.get('/audit-history', financeController.getAuditHistory);
 router.get('/companies', financeController.getCompanies);
 router.get('/expected-deductions', financeController.getExpectedDeductions);
+router.get('/uploaded-deductions', financeController.getUploadedDeductions);
 router.post('/process-batch', financeController.processBatch);
 router.get('/report-companies', financeController.getReportCompanies);
+router.get('/company-divisions', financeController.getCompanyDivisions);
 router.get('/reports/data', financeController.getReportsData);
 router.post('/send-report-email', financeController.sendReportEmail);
 

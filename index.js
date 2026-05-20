@@ -6,6 +6,13 @@ const morgan = require('morgan');
 // Load environment variables
 dotenv.config();
 
+// Parse excel templates on startup
+try {
+  require('./parse_templates');
+} catch (e) {
+  console.error("Failed to parse templates on startup:", e);
+}
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
