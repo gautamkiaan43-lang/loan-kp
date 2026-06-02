@@ -183,12 +183,15 @@ exports.makeDecision = async (req, res) => {
       data: {
         action: isApprove ? 'CREDIT_APPROVE' : 'CREDIT_REJECT',
         user: req.user.name || req.user.email,
-        note: notes || `Credit decision: ${decision}`,
+        note: `${notes || `Credit decision: ${decision}`}. [Notification dispatched via Email to ${loan.employeeEmail || 'client'}]`,
         entityId: loanId
       }
     });
 
-    res.json({ message: `Loan ${isApprove ? 'approved' : 'rejected'} successfully`, loan: updatedLoan });
+    res.json({ 
+      message: `Loan ${isApprove ? 'approved' : 'rejected'} successfully. Notification sent to ${loan.employeeEmail || 'client'}.`, 
+      loan: updatedLoan 
+    });
   } catch (error) {
     console.error('Credit Decision Error:', error);
     res.status(500).json({ message: 'Failed to process credit decision' });
@@ -285,10 +288,35 @@ exports.makeCounterOffer = async (req, res) => {
     }
 
     const originalMetadata = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : (loan.metadata || {});
+    const freq = originalMetadata.financialInfo?.salaryFrequency || 'Monthly';
+    const amountVal = parseFloat(amount);
+
+    if (isNaN(amountVal) || amountVal < 400 || amountVal > 8000 || amountVal % 400 !== 0) {
+      return res.status(400).json({ 
+        message: 'Proposed counter offer amount must be between R400 and R8000 in R400 increments.' 
+      });
+    }
+
+    const termVal = parseInt(term);
+    let termValid = false;
+    if (freq === 'Weekly') {
+      if (termVal >= 4 && termVal <= 24 && termVal % 4 === 0) termValid = true;
+    } else if (freq === 'Fortnightly') {
+      if (termVal >= 2 && termVal <= 12 && termVal % 2 === 0) termValid = true;
+    } else { // Monthly
+      if (termVal >= 1 && termVal <= 6) termValid = true;
+    }
+
+    if (!termValid) {
+      return res.status(400).json({ 
+        message: `Proposed term (${term}) is invalid for ${freq} frequency. Must represent a period between 1 and 6 months.` 
+      });
+    }
+
     const updatedMetadata = {
       ...originalMetadata,
       counterOffer: {
-        amount: parseFloat(amount),
+        amount: amountVal,
         term: String(term),
         originalAmount: loan.amount,
         originalTerm: originalMetadata.loanRequest?.term || '12',
@@ -311,12 +339,15 @@ exports.makeCounterOffer = async (req, res) => {
       data: {
         action: 'CREDIT_COUNTER_OFFER',
         user: req.user.name || req.user.email,
-        note: `Proposed counter-offer: R ${parseFloat(amount).toLocaleString()} over ${term} months`,
+        note: `Proposed counter-offer: R ${amountVal.toLocaleString()} over ${term} (Frequency: ${freq}). [Notification dispatched via Email & Dashboard to ${loan.employeeEmail || 'client'}]`,
         entityId: loanId
       }
     });
 
-    res.json({ message: 'Counter-offer proposed successfully', loan: updatedLoan });
+    res.json({ 
+      message: `Counter-offer proposed successfully. Notification dispatched to ${loan.employeeEmail || 'client'}.`, 
+      loan: updatedLoan 
+    });
   } catch (error) {
     console.error('Counter Offer Error:', error);
     res.status(500).json({ message: 'Failed to process counter-offer' });

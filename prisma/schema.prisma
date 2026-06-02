@@ -48,6 +48,9 @@ model loan {
   documentUrls  Json?
   kickbackRate  Float?
   discountRate  Float?
+  kickbackType  String?       @default("PERCENTAGE")
+  commissionAmount Float?      @default(0)
+  discountAmount Float?        @default(0)
   installment   installment[]
   user          user          @relation(fields: [userId], references: [id], map: "Loan_userId_fkey")
 
@@ -82,8 +85,28 @@ model company {
   authorizedSignatories Json?
   kickbackRate          Float?
   discountRate          Float?
+  kickbackType          String?  @default("PERCENTAGE")
+  commissionAmount      Float?   @default(0)
+  discountAmount        Float?   @default(0)
   createdAt             DateTime @default(now())
   updatedAt             DateTime @updatedAt
+  
+  // Custom Fields for Employee Verification & Stats
+  approxTotalEmployees  Int      @default(0)
+  employeeNumbers       Json?
+  lastEmployeeUploadDate DateTime?
+  fortnightCycle        String?  @default("N/A")
+
+  // SLA & Authorized Signatory Module Fields
+  agreement_type                  String?
+  authorized_signatory_name       String?
+  authorized_signatory_designation String?
+  authorized_signatory_email      String?
+  authorized_signatory_phone      String?
+  authorized_signatory_signature  String?  @db.LongText
+
+  latitude                        Float?
+  longitude                       Float?
 }
 
 model deductionschedule {
@@ -97,5 +120,20 @@ model deductionschedule {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
   details     Json
+}
+
+model document {
+  id           Int      @id @default(autoincrement())
+  fileName     String
+  fileUrl      String   @db.VarChar(500)
+  fileType     String
+  category     String
+  uploadedBy   String
+  companyName  String?
+  employeeName String?
+  loanRef      String?
+  status       String   @default("Active")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 }
 

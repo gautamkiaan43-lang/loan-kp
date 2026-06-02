@@ -6,6 +6,20 @@ const morgan = require('morgan');
 // Load environment variables
 dotenv.config();
 
+// Auto-run Prisma migrations/generate on startup
+try {
+  const { execSync } = require('child_process');
+  console.log("==================================================");
+  console.log("🔄 AUTO-SYNCING PRISMA DATABASE SCHEMA...");
+  execSync('npx prisma db push', { stdio: 'inherit' });
+  console.log("⚙️ REGENERATING PRISMA CLIENT...");
+  execSync('npx prisma generate', { stdio: 'inherit' });
+  console.log("✅ DATABASE SCHEMA SYNC AND CLIENT REGENERATION SUCCESSFUL!");
+  console.log("==================================================");
+} catch (prismaError) {
+  console.error("❌ Failed to automatically sync Prisma database:", prismaError.message);
+}
+
 // Parse excel templates on startup
 try {
   require('./parse_templates');
@@ -57,6 +71,7 @@ const profileRoutes = require('./routes/profileRoutes');
 const loanRoutes = require('./routes/loanRoutes');
 const investorRoutes = require('./routes/investorRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
+const documentRoutes = require('./routes/documentRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
@@ -69,6 +84,7 @@ app.use('/api/profile', profileRoutes);
 app.use('/api/loans', loanRoutes);
 app.use('/api/investor', investorRoutes);
 app.use('/api/employee', employeeRoutes);
+app.use('/api/documents', documentRoutes);
 
 // Health Check
 app.get('/health', (req, res) => {

@@ -23,5 +23,8 @@ router.get('/remittances', hrController.getRemittances);
 router.post('/upload-deductions', upload.single('file'), hrController.uploadDeductions);
 router.get('/uploaded-schedules', hrController.getUploadedSchedules);
 
+// Employee list verification roster endpoint
+router.post('/upload-employee-list', upload.single('file'), hrController.uploadEmployeeList);
+
 module.exports = router;
 

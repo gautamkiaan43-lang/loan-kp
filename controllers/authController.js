@@ -98,3 +98,24 @@ exports.getMe = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
+exports.getCompanyConfig = async (req, res) => {
+  const { name } = req.params;
+  try {
+    const comp = await prisma.company.findUnique({
+      where: { name }
+    });
+    if (!comp) {
+      return res.status(404).json({ message: 'Company not found' });
+    }
+    res.json({
+      discountAmount: comp.discountAmount || 0,
+      discountRate:   comp.discountRate   || 0,
+      address:        comp.address        || null,
+      contactPeople:  comp.contactPeople  || null,
+    });
+  } catch (error) {
+    console.error('getCompanyConfig Error:', error);
+    res.status(500).json({ message: 'Server error' });
+  }
+};

@@ -11,6 +11,8 @@ router.post('/disburse', financeController.disburse);
 router.get('/settlement-eligible-loans', financeController.getSettlementEligibleLoans);
 router.post('/execute-settlement', financeController.executeSettlement);
 router.get('/settlement-history', financeController.getSettlementHistory);
+router.get('/recovery-queue', financeController.getRecoveryQueue);
+router.post('/send-recovery-action', financeController.sendRecoveryAction);
 router.get('/search-loan-for-writeoff', financeController.searchLoanForWriteoff);
 router.post('/commit-writeoff', financeController.commitWriteoff);
 router.get('/writeoff-ledger', financeController.getWriteoffLedger);

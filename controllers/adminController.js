@@ -293,7 +293,16 @@ exports.getAllCompanies = async (req, res) => {
         specimenSignatureUrl: ec.specimenSignatureUrl,
         authorizedSignatories: ec.authorizedSignatories,
         kickbackRate: ec.kickbackRate,
-        discountRate: ec.discountRate
+        discountRate: ec.discountRate,
+        kickbackType: ec.kickbackType,
+        commissionAmount: ec.commissionAmount,
+        discountAmount: ec.discountAmount,
+        agreement_type: ec.agreement_type,
+        authorized_signatory_name: ec.authorized_signatory_name,
+        authorized_signatory_designation: ec.authorized_signatory_designation,
+        authorized_signatory_email: ec.authorized_signatory_email,
+        authorized_signatory_phone: ec.authorized_signatory_phone,
+        authorized_signatory_signature: ec.authorized_signatory_signature
       });
     }
 
@@ -309,9 +318,62 @@ exports.createCompany = async (req, res) => {
     return res.status(403).json({ message: 'Forbidden' });
   }
 
-  const { name, creditLimit, address, contactPeople, divisions, specimenSignatureUrl, authorizedSignatories, kickbackRate, discountRate } = req.body;
+  const {
+    name,
+    creditLimit,
+    address,
+    contactPeople,
+    divisions,
+    specimenSignatureUrl,
+    authorizedSignatories,
+    kickbackRate,
+    discountRate,
+    kickbackType,
+    commissionAmount,
+    discountAmount,
+    agreement_type,
+    authorized_signatory_name,
+    authorized_signatory_designation,
+    authorized_signatory_email,
+    authorized_signatory_phone,
+    authorized_signatory_signature,
+    latitude,
+    longitude
+  } = req.body;
 
   try {
+    const existingCompany = await prisma.company.findUnique({
+      where: { name }
+    });
+
+    if (existingCompany) {
+      const updatedCompany = await prisma.company.update({
+        where: { id: existingCompany.id },
+        data: {
+          creditLimit: creditLimit || existingCompany.creditLimit,
+          address: address !== undefined ? address : existingCompany.address,
+          contactPeople: contactPeople !== undefined ? contactPeople : existingCompany.contactPeople,
+          divisions: divisions !== undefined ? divisions : existingCompany.divisions,
+          specimenSignatureUrl: specimenSignatureUrl !== undefined ? specimenSignatureUrl : existingCompany.specimenSignatureUrl,
+          authorizedSignatories: authorizedSignatories !== undefined ? authorizedSignatories : existingCompany.authorizedSignatories,
+          kickbackRate: kickbackRate ? parseFloat(kickbackRate) : existingCompany.kickbackRate,
+          discountRate: discountRate ? parseFloat(discountRate) : existingCompany.discountRate,
+          kickbackType: kickbackType || existingCompany.kickbackType,
+          commissionAmount: commissionAmount ? parseFloat(commissionAmount) : existingCompany.commissionAmount,
+          discountAmount: discountAmount ? parseFloat(discountAmount) : existingCompany.discountAmount,
+          agreement_type: agreement_type !== undefined ? agreement_type : existingCompany.agreement_type,
+          authorized_signatory_name: authorized_signatory_name !== undefined ? authorized_signatory_name : existingCompany.authorized_signatory_name,
+          authorized_signatory_designation: authorized_signatory_designation !== undefined ? authorized_signatory_designation : existingCompany.authorized_signatory_designation,
+          authorized_signatory_email: authorized_signatory_email !== undefined ? authorized_signatory_email : existingCompany.authorized_signatory_email,
+          authorized_signatory_phone: authorized_signatory_phone !== undefined ? authorized_signatory_phone : existingCompany.authorized_signatory_phone,
+          authorized_signatory_signature: authorized_signatory_signature !== undefined ? authorized_signatory_signature : existingCompany.authorized_signatory_signature,
+          latitude: (latitude !== undefined && latitude !== null) ? parseFloat(latitude) : existingCompany.latitude,
+          longitude: (longitude !== undefined && longitude !== null) ? parseFloat(longitude) : existingCompany.longitude
+        }
+      });
+      return res.status(201).json(updatedCompany);
+    }
+
     const newCompany = await prisma.company.create({
       data: {
         name,
@@ -323,7 +385,18 @@ exports.createCompany = async (req, res) => {
         specimenSignatureUrl,
         authorizedSignatories,
         kickbackRate: kickbackRate ? parseFloat(kickbackRate) : null,
-        discountRate: discountRate ? parseFloat(discountRate) : null
+        discountRate: discountRate ? parseFloat(discountRate) : null,
+        kickbackType: kickbackType || 'PERCENTAGE',
+        commissionAmount: commissionAmount ? parseFloat(commissionAmount) : 0,
+        discountAmount: discountAmount ? parseFloat(discountAmount) : 0,
+        agreement_type,
+        authorized_signatory_name,
+        authorized_signatory_designation,
+        authorized_signatory_email,
+        authorized_signatory_phone,
+        authorized_signatory_signature,
+        latitude: (latitude !== undefined && latitude !== null) ? parseFloat(latitude) : null,
+        longitude: (longitude !== undefined && longitude !== null) ? parseFloat(longitude) : null
       }
     });
     res.status(201).json(newCompany);
@@ -342,7 +415,29 @@ exports.updateCompany = async (req, res) => {
   }
 
   const { id } = req.params;
-  const { name, creditLimit, status, address, contactPeople, divisions, specimenSignatureUrl, authorizedSignatories, kickbackRate, discountRate } = req.body;
+  const {
+    name,
+    creditLimit,
+    status,
+    address,
+    contactPeople,
+    divisions,
+    specimenSignatureUrl,
+    authorizedSignatories,
+    kickbackRate,
+    discountRate,
+    kickbackType,
+    commissionAmount,
+    discountAmount,
+    agreement_type,
+    authorized_signatory_name,
+    authorized_signatory_designation,
+    authorized_signatory_email,
+    authorized_signatory_phone,
+    authorized_signatory_signature,
+    latitude,
+    longitude
+  } = req.body;
 
   try {
     const idInt = parseInt(id);
@@ -358,7 +453,18 @@ exports.updateCompany = async (req, res) => {
       specimenSignatureUrl,
       authorizedSignatories,
       kickbackRate: kickbackRate ? parseFloat(kickbackRate) : null,
-      discountRate: discountRate ? parseFloat(discountRate) : null
+      discountRate: discountRate ? parseFloat(discountRate) : null,
+      kickbackType: kickbackType || 'PERCENTAGE',
+      commissionAmount: commissionAmount ? parseFloat(commissionAmount) : 0,
+      discountAmount: discountAmount ? parseFloat(discountAmount) : 0,
+      agreement_type,
+      authorized_signatory_name,
+      authorized_signatory_designation,
+      authorized_signatory_email,
+      authorized_signatory_phone,
+      authorized_signatory_signature,
+      latitude: (latitude !== undefined && latitude !== null) ? parseFloat(latitude) : null,
+      longitude: (longitude !== undefined && longitude !== null) ? parseFloat(longitude) : null
     };
 
     if (isNaN(idInt)) {
@@ -472,7 +578,20 @@ exports.getApplicationById = async (req, res) => {
       return res.status(404).json({ message: 'Application not found' });
     }
 
-    res.json(loan);
+    // Retrieve company details for the signatory information
+    let companyRecord = null;
+    if (loan.company) {
+      companyRecord = await prisma.company.findUnique({
+        where: { name: loan.company }
+      });
+    }
+
+    const loanWithCompany = {
+      ...loan,
+      companyRecord
+    };
+
+    res.json(loanWithCompany);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
@@ -519,14 +638,98 @@ exports.getAuditLogs = async (req, res) => {
     return res.status(403).json({ message: 'Forbidden' });
   }
 
+  const { search, action, user, startDate, endDate } = req.query;
+
   try {
+    const where = {};
+
+    if (action && action !== 'ALL') {
+      where.action = action;
+    }
+    if (user && user !== 'ALL') {
+      where.user = user;
+    }
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) {
+        where.createdAt.gte = new Date(startDate);
+      }
+      if (endDate) {
+        // Set end date to end of the day
+        const end = new Date(endDate);
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+    if (search) {
+      where.OR = [
+        { action: { contains: search } },
+        { user: { contains: search } },
+        { note: { contains: search } },
+        { entityId: { contains: search } }
+      ];
+    }
+
     const logs = await prisma.auditlog.findMany({
+      where,
       orderBy: { createdAt: 'desc' },
-      take: 50
+      take: 200
     });
     res.json(logs);
   } catch (error) {
-    console.error(error);
+    console.error('Error fetching audit logs:', error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+exports.uploadSignature = async (req, res) => {
+  if (req.user.role !== 'admin' && req.user.role !== 'hr') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const { id } = req.params;
+
+  try {
+    if (!req.file) {
+      return res.status(400).json({ message: 'No signature file uploaded' });
+    }
+
+    const idInt = parseInt(id);
+    let updated;
+    const data = {
+      authorized_signatory_signature: req.file.path,
+      updatedAt: new Date()
+    };
+
+    if (isNaN(idInt)) {
+      // Legacy company
+      updated = await prisma.company.update({
+        where: { name: id },
+        data
+      });
+    } else {
+      updated = await prisma.company.update({
+        where: { id: idInt },
+        data
+      });
+    }
+
+    // Record in audit log
+    await prisma.auditlog.create({
+      data: {
+        action: 'COMPANY_SIGNATURE_UPLOAD',
+        user: req.user.email,
+        note: `Uploaded signature for company: ${updated.name}`
+      }
+    });
+
+    res.json({
+      message: 'Signature uploaded successfully',
+      signatureUrl: req.file.path,
+      company: updated
+    });
+  } catch (error) {
+    console.error('Error uploading signature:', error);
+    res.status(500).json({ message: 'Failed to upload signature' });
   }
 };
