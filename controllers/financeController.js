@@ -1,15 +1,18 @@
 const prisma = require('../config/db');
+const { calculateOutstandingBalance, calculateSettlementAmount, getLoanMatrixValues, calculateEarlySettlement } = require('../utils/settlementCalculator');
 
 exports.getStats = async (req, res) => {
   try {
     const loans = await prisma.loan.findMany();
 
     const pendingPayouts = loans.filter(l =>
-      l.stage === 'ADMIN_APPROVAL_PENDING' ||
+      (l.stage === 'ADMIN_APPROVAL_PENDING' ||
       l.stage === 'ADMIN_APPROVAL' ||
+      l.stage === 'APPROVED' ||
       l.stage === 'FINANCE_PENDING' ||
       l.status.toLowerCase().includes('admin approved') ||
-      l.status.toLowerCase().includes('credit approved')
+      l.status.toLowerCase().includes('credit approved')) &&
+      l.disbursementType !== 'Immediate'
     );
 
     const disbursedLoans = loans.filter(l =>
@@ -39,10 +42,14 @@ exports.getPayoutQueue = async (req, res) => {
         OR: [
           { stage: 'ADMIN_APPROVAL_PENDING' },
           { stage: 'ADMIN_APPROVAL' },
+          { stage: 'APPROVED' },
           { stage: 'FINANCE_PENDING' },
           { status: { contains: 'Admin Approved' } },
           { status: { contains: 'Credit Approved' } }
-        ]
+        ],
+        NOT: {
+          disbursementType: 'Immediate'
+        }
       },
       orderBy: { updatedAt: 'desc' }
     });
@@ -67,221 +74,214 @@ exports.getPayoutQueue = async (req, res) => {
   }
 };
 
+// ISO 8601 week number: week starts on Monday.
+// Matches the week numbering used by <input type="week"> in browsers.
+const getWeekNum = (date) => {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  // Set to nearest Thursday: current date + 4 - current day (Mon=1 ... Sun=7)
+  const dayNum = d.getUTCDay() || 7; // treat Sunday as 7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+};
+
+const generateDueDates = (frequency, termMonths, disbursementDate = new Date(), fortnightCycle = 'N/A') => {
+  const dates = [];
+  const start = new Date(disbursementDate);
+  const day = start.getDate();
+  
+  let totalInstallments = termMonths;
+  
+  if (frequency === 'Weekly') {
+    totalInstallments = termMonths * 4;
+    for (let i = 1; i <= totalInstallments; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + (7 * i));
+      dates.push(d);
+    }
+  } else if (frequency === 'Fortnightly') {
+    totalInstallments = termMonths * 2;
+    // Align first due date to company's fortnightCycle (Even/Odd ISO week)
+    // Candidate 1: start + 7 days  (minimum safe buffer)
+    // Candidate 2: start + 14 days (default 2-week buffer)
+    // Candidate 3: start + 21 days (if both above are wrong parity)
+    let firstDate = null;
+
+    if (fortnightCycle === 'Even Weeks' || fortnightCycle === 'Odd Weeks') {
+      const targetEven = fortnightCycle === 'Even Weeks';
+      // Try candidates in order: +7, +14, +21 days
+      for (const offset of [7, 14, 21]) {
+        const candidate = new Date(start);
+        candidate.setDate(start.getDate() + offset);
+        const w = getWeekNum(candidate);
+        const isEven = w % 2 === 0;
+        if (isEven === targetEven) {
+          firstDate = candidate;
+          break;
+        }
+      }
+      // Fallback (should never be needed with 3 candidates)
+      if (!firstDate) {
+        firstDate = new Date(start);
+        firstDate.setDate(start.getDate() + 14);
+      }
+    } else {
+      // No cycle configured — default to +14 days
+      firstDate = new Date(start);
+      firstDate.setDate(start.getDate() + 14);
+    }
+
+    for (let i = 0; i < totalInstallments; i++) {
+      const d = new Date(firstDate);
+      d.setDate(firstDate.getDate() + (14 * i));
+      dates.push(d);
+    }
+  } else { // Monthly
+    totalInstallments = termMonths;
+    let targetMonth = start.getMonth();
+    let targetYear = start.getFullYear();
+    
+    if (day > 8) {
+      targetMonth += 1;
+      if (targetMonth > 11) {
+        targetMonth = 0;
+        targetYear += 1;
+      }
+    }
+    
+    for (let i = 0; i < totalInstallments; i++) {
+      const d = new Date(targetYear, targetMonth + i, 25);
+      dates.push(d);
+    }
+  }
+  return dates;
+};
+
+exports.disburseLoanInternal = async (loanId, operatorNameOrEmail) => {
+  try {
+    const loan = await prisma.loan.findUnique({
+      where: { reference: loanId }
+    });
+
+    if (!loan) {
+      return { success: false, status: 404, message: 'Loan not found' };
+    }
+
+    const meta = typeof loan.metadata === 'string' ? JSON.parse(loan.metadata) : (loan.metadata || {});
+    const termMonths = parseInt(meta.loanRequest?.term) || 6;
+    const frequency = meta.financialInfo?.salaryFrequency || 'Monthly';
+
+    const matrixValues = getLoanMatrixValues(loan.amount, termMonths);
+    const totalInstallmentsCount = frequency === 'Weekly' ? (termMonths * 4) : (frequency === 'Fortnightly' ? (termMonths * 2) : termMonths);
+
+    const instAmount = matrixValues.totalRepayment / totalInstallmentsCount;
+    const interestPerPeriod = matrixValues.interest / totalInstallmentsCount;
+    const serviceFeePerPeriod = matrixValues.serviceFee / totalInstallmentsCount;
+
+    // Fetch company to get fortnight config
+    const company = await prisma.company.findUnique({
+      where: { name: loan.company }
+    });
+    const fortnightCycle = company?.fortnightCycle || 'N/A';
+
+    const dueDates = generateDueDates(frequency, termMonths, new Date(), fortnightCycle);
+
+    const updatedLoan = await prisma.$transaction(async (tx) => {
+      // 1. Update loan status
+      const updated = await tx.loan.update({
+        where: { reference: loanId },
+        data: {
+          status: 'Active',
+          stage: 'ACTIVE',
+          updatedAt: new Date()
+        }
+      });
+
+      // 2. Generate installments
+      const installmentData = dueDates.map((date, idx) => ({
+        reference: `PAY-${loan.reference}-${idx + 1}`,
+        amount: Math.round(instAmount * 100) / 100,
+        paidAmount: 0,
+        status: 'PENDING',
+        dueDate: date,
+        loanId: loan.id
+      }));
+
+      await tx.installment.createMany({ data: installmentData });
+
+      // 3. Generate Interest Allocation
+      const interestData = dueDates.map((date) => ({
+        loanId: loan.id,
+        dueDate: date,
+        amount: Math.round(interestPerPeriod * 100) / 100,
+        status: 'UNEARNED'
+      }));
+
+      await tx.interest_allocation.createMany({ data: interestData });
+
+      // 4. Generate Service Fee Allocation
+      const serviceFeeData = dueDates.map((date) => ({
+        loanId: loan.id,
+        dueDate: date,
+        amount: Math.round(serviceFeePerPeriod * 100) / 100,
+        status: 'UNEARNED'
+      }));
+
+      await tx.service_fee_allocation.createMany({ data: serviceFeeData });
+
+      // 5. Audit Log
+      await tx.auditlog.create({
+        data: {
+          action: 'FINANCE_DISBURSE',
+          user: operatorNameOrEmail,
+          note: `Loan disbursed and activated. Generated ${totalInstallmentsCount} installments & pro-rata allocations.`,
+          entityId: loanId
+        }
+      });
+
+      return updated;
+    });
+
+    return { success: true, loan: updatedLoan };
+  } catch (error) {
+    console.error('disburseLoanInternal Error:', error);
+    return { success: false, message: error.message };
+  }
+};
+
 exports.disburse = async (req, res) => {
   const { loanId } = req.body;
   try {
-    const updatedLoan = await prisma.loan.update({
-      where: { reference: loanId },
-      data: {
-        status: 'Active',
-        stage: 'ACTIVE',
-        updatedAt: new Date()
-      }
-    });
-
-    await prisma.auditlog.create({
-      data: {
-        action: 'FINANCE_DISBURSE',
-        user: req.user.name || req.user.email,
-        note: `Loan disbursed and activated.`,
-        entityId: loanId
-      }
-    });
-
-    res.json({ message: 'Loan disbursed successfully', loan: updatedLoan });
+    const result = await exports.disburseLoanInternal(loanId, req.user.name || req.user.email);
+    if (!result.success) {
+      return res.status(result.status || 500).json({ message: result.message });
+    }
+    res.json({ message: 'Loan disbursed successfully', loan: result.loan });
   } catch (error) {
     console.error('Disburse Error:', error);
     res.status(500).json({ message: 'Failed to disburse loan' });
   }
 };
 
-exports.getSettlementEligibleLoans = async (req, res) => {
-  const { search } = req.query;
+exports.disburseBulk = async (req, res) => {
+  const { loanIds } = req.body;
+  if (!Array.isArray(loanIds)) {
+    return res.status(400).json({ message: 'loanIds must be an array' });
+  }
   try {
-    const loans = await prisma.loan.findMany({
-      where: {
-        status: { in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED'] },
-        OR: search ? [
-          { employeeName: { contains: search } },
-          { reference: { contains: search } }
-        ] : undefined
-      },
-      include: { installment: true },
-      orderBy: { updatedAt: 'desc' }
-    });
-
-    const formatted = loans.map(l => {
-      const pendingInst = l.installment ? l.installment.filter(i => i.status === 'PENDING') : [];
-      const actualOutstanding = pendingInst.reduce((sum, inst) => sum + inst.amount, 0);
-      return {
-        id: l.reference,
-        name: l.employeeName,
-        amount: l.amount,
-        status: l.status,
-        outstandingAmount: actualOutstanding > 0 ? actualOutstanding : Math.round((l.amount * 0.8) * 100) / 100
-      };
-    });
-
-    res.json(formatted);
+    const results = [];
+    const operator = req.user.name || req.user.email;
+    for (const loanId of loanIds) {
+      const disResult = await exports.disburseLoanInternal(loanId, operator);
+      results.push({ loanId, ...disResult });
+    }
+    res.json({ message: 'Bulk disbursement processed', results });
   } catch (error) {
-    console.error('Fetch Eligible Loans Error:', error);
-    res.status(500).json({ message: 'Failed to fetch eligible loans' });
+    console.error('Bulk Disburse Error:', error);
+    res.status(500).json({ message: 'Failed to process bulk disbursement' });
   }
 };
 
-exports.executeSettlement = async (req, res) => {
-  const { sourceLoanId, targetLoanId, amount, notes } = req.body;
-
-  try {
-    const updatedTarget = await prisma.loan.update({
-      where: { reference: targetLoanId },
-      data: {
-        status: 'Paid',
-        stage: 'PAID',
-        updatedAt: new Date()
-      }
-    });
-
-    // Also mark all pending installments of this target loan as PAID/SETTLED
-    await prisma.installment.updateMany({
-      where: {
-        loanId: updatedTarget.id,
-        status: 'PENDING'
-      },
-      data: {
-        status: 'PAID',
-        note: `Settled via refinancing from ${sourceLoanId}`
-      }
-    });
-
-    await prisma.auditlog.create({
-      data: {
-        action: 'FINANCE_SETTLE',
-        user: req.user.name || req.user.email,
-        note: `Loan settled by ${sourceLoanId}. Amount: R${amount}. Notes: ${notes}. [In-App notification dispatched to client]`,
-        entityId: targetLoanId
-      }
-    });
-
-    res.json({ message: 'Settlement executed successfully', loan: updatedTarget });
-  } catch (error) {
-    console.error('Execute Settlement Error:', error);
-    res.status(500).json({ message: 'Failed to execute settlement' });
-  }
-};
-
-exports.getSettlementHistory = async (req, res) => {
-  try {
-    const logs = await prisma.auditlog.findMany({
-      where: { action: 'FINANCE_SETTLE' },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const history = logs.map(log => {
-      // Extract IDs from note: "Loan settled by APP-XXX. Amount: RYYY. Notes: ZZZ"
-      const sourceMatch = log.note.match(/by ([A-Z0-9-]+)/i);
-      const amountMatch = log.note.match(/Amount: R([\d.]+)/);
-
-      return {
-        date: log.createdAt,
-        sourceId: sourceMatch ? sourceMatch[1] : 'N/A',
-        targetId: log.entityId,
-        amount: amountMatch ? amountMatch[1] : '0',
-        status: 'Completed'
-      };
-    });
-
-    res.json(history);
-  } catch (error) {
-    console.error('Settlement History Error:', error);
-    res.status(500).json({ message: 'Failed to fetch settlement history' });
-  }
-};
-
-exports.searchLoanForWriteoff = async (req, res) => {
-  const { search } = req.query;
-  try {
-    const loans = await prisma.loan.findMany({
-      where: {
-        status: { in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED'] },
-        OR: [
-          { employeeName: { contains: search } },
-          { reference: { contains: search } }
-        ]
-      },
-      take: 5
-    });
-
-    res.json(loans.map(l => ({
-      id: l.reference,
-      name: l.employeeName,
-      amount: l.amount,
-      status: l.status
-    })));
-  } catch (error) {
-    console.error('Search Write-off Error:', error);
-    res.status(500).json({ message: 'Search failed' });
-  }
-};
-
-exports.commitWriteoff = async (req, res) => {
-  const { loanId, principal, interest, fees, reason } = req.body;
-  const total = Number(principal) + Number(interest) + Number(fees);
-
-  try {
-    const updatedLoan = await prisma.loan.update({
-      where: { reference: loanId },
-      data: {
-        status: 'Written-Off',
-        stage: 'WRITTEN_OFF',
-        updatedAt: new Date()
-      }
-    });
-
-    await prisma.auditlog.create({
-      data: {
-        action: 'FINANCE_WRITEOFF',
-        user: req.user.name || req.user.email,
-        note: `Loan written off. Total: R${total} (P: ${principal}, I: ${interest}, F: ${fees}). Reason: ${reason}`,
-        entityId: loanId
-      }
-    });
-
-    res.json({ message: 'Journal write-off committed successfully', loan: updatedLoan });
-  } catch (error) {
-    console.error('Commit Write-off Error:', error);
-    res.status(500).json({ message: 'Commit failed' });
-  }
-};
-
-exports.getWriteoffLedger = async (req, res) => {
-  try {
-    const logs = await prisma.auditlog.findMany({
-      where: { action: 'FINANCE_WRITEOFF' },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const ledger = logs.map(log => {
-      const pMatch = log.note.match(/P: ([\d.]+)/);
-      const fMatch = log.note.match(/F: ([\d.]+)/);
-      const tMatch = log.note.match(/Total: R([\d.]+)/);
-
-      return {
-        date: log.createdAt,
-        accountName: '', // Would need to join or fetch separately if needed
-        accountId: log.entityId,
-        principal: pMatch ? pMatch[1] : '0',
-        fees: fMatch ? fMatch[1] : '0',
-        total: tMatch ? tMatch[1] : '0'
-      };
-    });
-
-    res.json(ledger);
-  } catch (error) {
-    console.error('Ledger Fetch Error:', error);
-    res.status(500).json({ message: 'Failed to fetch ledger' });
-  }
-};
 
 exports.getAuditHistory = async (req, res) => {
   try {
@@ -582,12 +582,20 @@ exports.getReportsData = async (req, res) => {
           ...filter,
           status: { in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED'] }
         },
-        include: { installment: { where: { status: 'PENDING' } } }
+        include: {
+          installment: true,
+          interest_allocations: true,
+          service_fee_allocations: true
+        }
       });
       const formatted = [];
       loans.forEach(l => {
-        if (l.installment.length > 0) {
-          const currentInst = l.installment[0];
+        const pendingInsts = l.installment ? l.installment.filter(i => i.status === 'PENDING') : [];
+        if (pendingInsts.length > 0) {
+          // Sort pending installments by dueDate to find the next/current one
+          pendingInsts.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate));
+          const currentInst = pendingInsts[0];
+
           const meta = typeof l.metadata === 'string' ? JSON.parse(l.metadata) : (l.metadata || {});
           const personalInfo = meta.personalInfo || {};
           const employmentInfo = meta.employmentInfo || {};
@@ -598,12 +606,24 @@ exports.getReportsData = async (req, res) => {
           const firstName = personalInfo.name || parts[0] || '';
           const lastName = personalInfo.surname || parts.slice(1).join(' ') || '';
 
-          const arrearsVal = Number(repaymentDetails.arrears || 0);
+          const now = new Date();
+          const overdueInsts = pendingInsts.filter(i => new Date(i.dueDate) < now);
+          const arrearsVal = overdueInsts.reduce((sum, i) => sum + Math.max(0, i.amount - (i.paidAmount || 0)), 0);
+
           const repaymentVal = currentInst.amount;
           const nowDueVal = arrearsVal + repaymentVal;
-          const pipelineBal = Number(loanRequest.amount || (repaymentVal * 10));
-          const actualBal = Number(repaymentDetails.totalRepayment || (repaymentVal * 8));
-          const settlementAmt = actualBal * 1.05;
+          
+          let term = 6;
+          if (loanRequest.term) {
+            term = parseInt(loanRequest.term) || 6;
+          } else if (l.installment && l.installment.length > 0) {
+            term = l.installment.length;
+          }
+
+          const matrixValues = getLoanMatrixValues(l.amount, term);
+          const pipelineBal = matrixValues.totalRepayment;
+          const actualBal = calculateOutstandingBalance(l);
+          const settlementAmt = calculateSettlementAmount(l);
           const lastPayDate = repaymentDetails.lastPaymentDate || 'N/A';
 
           formatted.push({
@@ -735,18 +755,18 @@ exports.getSettlementEligibleLoans = async (req, res) => {
     const loans = await prisma.loan.findMany({
       where,
       include: {
-        installment: {
-          where: { status: 'PENDING' }
-        }
+        installment: true,
+        interest_allocations: true,
+        service_fee_allocations: true
       }
     });
 
     const formatted = loans.map(l => {
-      const outstandingAmount = l.installment.reduce((sum, inst) => sum + inst.amount, 0);
+      const outstandingAmount = calculateSettlementAmount(l);
       return {
         id: l.reference,
         name: l.employeeName,
-        outstandingAmount: outstandingAmount || l.amount, // fallback to amount if installments are paid or empty
+        outstandingAmount: outstandingAmount,
         status: l.status
       };
     });
@@ -1072,4 +1092,282 @@ exports.sendRecoveryAction = async (req, res) => {
     res.status(500).json({ message: 'Failed to process recovery action' });
   }
 };
+
+exports.getEarlySettlementPreview = async (req, res) => {
+  const { loanId, includePipeline } = req.query;
+  try {
+    const loan = await prisma.loan.findUnique({
+      where: { reference: loanId },
+      include: {
+        installment: true,
+        interest_allocations: true,
+        service_fee_allocations: true
+      }
+    });
+
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan not found' });
+    }
+
+    const details = await calculateEarlySettlement(loan, includePipeline === 'true', new Date());
+    res.json(details);
+  } catch (error) {
+    console.error('Preview error:', error);
+    res.status(500).json({ message: 'Failed to calculate early settlement preview' });
+  }
+};
+
+exports.createSettlementQuote = async (req, res) => {
+  const { loanId, includePipeline } = req.body;
+  try {
+    const loan = await prisma.loan.findUnique({
+      where: { reference: loanId },
+      include: {
+        installment: true,
+        interest_allocations: true,
+        service_fee_allocations: true
+      }
+    });
+
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan not found' });
+    }
+
+    const details = await calculateEarlySettlement(loan, !!includePipeline, new Date());
+    if (!details) {
+      return res.status(400).json({ message: 'Failed to calculate settlement details' });
+    }
+
+    // Expire any existing ACTIVE quotes for this loan
+    await prisma.settlement_quote.updateMany({
+      where: {
+        loanId: loan.id,
+        status: 'ACTIVE'
+      },
+      data: {
+        status: 'EXPIRED'
+      }
+    });
+
+    // Generate unique quote number: Q-YYYYMMDD-XXXX
+    const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const randStr = Math.floor(1000 + Math.random() * 9000);
+    const quoteNumber = `Q-${dateStr}-${randStr}`;
+
+    const expiryDate = new Date();
+    expiryDate.setDate(expiryDate.getDate() + 7);
+
+    const quote = await prisma.settlement_quote.create({
+      data: {
+        quoteNumber,
+        loanId: loan.id,
+        customerName: loan.employeeName,
+        outstandingBalance: details.outstandingBalance,
+        unearnedInterest: details.unearnedInterest,
+        unearnedServiceFees: details.unearnedServiceFees,
+        pipelineDeduction: details.pipelineDeduction,
+        settlementSaving: details.settlementSaving,
+        settlementAmount: details.settlementAmount,
+        expiryDate,
+        status: 'ACTIVE'
+      },
+      include: {
+        loan: {
+          select: {
+            reference: true,
+            employeeName: true,
+            company: true,
+            status: true
+          }
+        }
+      }
+    });
+
+    res.json(quote);
+  } catch (error) {
+    console.error('Create Settlement Quote Error:', error);
+    res.status(500).json({ message: 'Failed to create settlement quote' });
+  }
+};
+
+exports.getSettlementQuotes = async (req, res) => {
+  const { loanRef } = req.query;
+  try {
+    const now = new Date();
+    
+    // Auto-expire active quotes past their expiry
+    await prisma.settlement_quote.updateMany({
+      where: {
+        status: 'ACTIVE',
+        expiryDate: { lt: now }
+      },
+      data: {
+        status: 'EXPIRED'
+      }
+    });
+
+    const where = {};
+    if (loanRef) {
+      where.loan = { reference: loanRef };
+    }
+
+    const quotes = await prisma.settlement_quote.findMany({
+      where,
+      include: {
+        loan: {
+          select: {
+            reference: true,
+            employeeName: true,
+            company: true,
+            status: true
+          }
+        }
+      },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    res.json(quotes);
+  } catch (error) {
+    console.error('Get Settlement Quotes Error:', error);
+    res.status(500).json({ message: 'Failed to fetch settlement quotes' });
+  }
+};
+
+exports.executeSettlementByQuote = async (req, res) => {
+  const { quoteNumber } = req.body;
+  try {
+    const quote = await prisma.settlement_quote.findUnique({
+      where: { quoteNumber },
+      include: {
+        loan: true
+      }
+    });
+
+    if (!quote) {
+      return res.status(404).json({ message: 'Settlement quote not found' });
+    }
+
+    const now = new Date();
+
+    if (quote.status !== 'ACTIVE') {
+      return res.status(400).json({ message: `Settlement quote is already ${quote.status.toLowerCase()}` });
+    }
+
+    if (new Date(quote.expiryDate) < now) {
+      await prisma.settlement_quote.update({
+        where: { id: quote.id },
+        data: { status: 'EXPIRED' }
+      });
+      return res.status(400).json({ message: 'Settlement quote has expired' });
+    }
+
+    await prisma.$transaction(async (tx) => {
+      // 1. Close loan account
+      await tx.loan.update({
+        where: { id: quote.loanId },
+        data: {
+          status: 'CLOSED',
+          stage: 'CLOSED',
+          updatedAt: now
+        }
+      });
+
+      // 2. Mark all pending installments as RECEIVED, paidAmount = installment.amount
+      const pendingInsts = await tx.installment.findMany({
+        where: {
+          loanId: quote.loanId,
+          status: 'PENDING'
+        }
+      });
+
+      for (const inst of pendingInsts) {
+        await tx.installment.update({
+          where: { id: inst.id },
+          data: {
+            status: 'RECEIVED',
+            paidAmount: inst.amount,
+            updatedAt: now
+          }
+        });
+      }
+
+      // 3. Mark unearned interest allocations as WRITTEN_OFF
+      await tx.interest_allocation.updateMany({
+        where: {
+          loanId: quote.loanId,
+          dueDate: { gt: now },
+          status: 'UNEARNED'
+        },
+        data: {
+          status: 'WRITTEN_OFF',
+          updatedAt: now
+        }
+      });
+
+      // 4. Mark unearned service fee allocations as WRITTEN_OFF
+      await tx.service_fee_allocation.updateMany({
+        where: {
+          loanId: quote.loanId,
+          dueDate: { gt: now },
+          status: 'UNEARNED'
+        },
+        data: {
+          status: 'WRITTEN_OFF',
+          updatedAt: now
+        }
+      });
+
+      // 5. Update past unearned interest allocations to EARNED
+      await tx.interest_allocation.updateMany({
+        where: {
+          loanId: quote.loanId,
+          dueDate: { lte: now },
+          status: 'UNEARNED'
+        },
+        data: {
+          status: 'EARNED',
+          updatedAt: now
+        }
+      });
+
+      // 6. Update past unearned service fee allocations to EARNED
+      await tx.service_fee_allocation.updateMany({
+        where: {
+          loanId: quote.loanId,
+          dueDate: { lte: now },
+          status: 'UNEARNED'
+        },
+        data: {
+          status: 'EARNED',
+          updatedAt: now
+        }
+      });
+
+      // 7. Update quote status to PAID
+      await tx.settlement_quote.update({
+        where: { id: quote.id },
+        data: {
+          status: 'PAID',
+          updatedAt: now
+        }
+      });
+
+      // 8. Create Audit Log
+      await tx.auditlog.create({
+        data: {
+          action: 'LOAN_SETTLEMENT',
+          user: req.user.name || req.user.email,
+          note: `Settled loan ${quote.loan.reference} via Quote ${quote.quoteNumber} for R ${quote.settlementAmount}.`,
+          entityId: quote.loan.reference
+        }
+      });
+    });
+
+    res.json({ message: 'Settlement executed successfully', quoteNumber: quote.quoteNumber });
+  } catch (error) {
+    console.error('Execute Settlement By Quote Error:', error);
+    res.status(500).json({ message: 'Failed to execute settlement' });
+  }
+};
+
 

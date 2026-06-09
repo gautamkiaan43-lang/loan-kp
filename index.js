@@ -72,6 +72,7 @@ const loanRoutes = require('./routes/loanRoutes');
 const investorRoutes = require('./routes/investorRoutes');
 const employeeRoutes = require('./routes/employeeRoutes');
 const documentRoutes = require('./routes/documentRoutes');
+const supportRoutes = require('./routes/supportRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/admin', adminRoutes);
@@ -85,6 +86,7 @@ app.use('/api/loans', loanRoutes);
 app.use('/api/investor', investorRoutes);
 app.use('/api/employee', employeeRoutes);
 app.use('/api/documents', documentRoutes);
+app.use('/api/support', supportRoutes);
 
 // Health Check
 app.get('/health', (req, res) => {

@@ -1,6 +1,13 @@
 const prisma = require('../config/db');
 const xlsx = require('xlsx');
 
+const getWeekNum = (date) => {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7; // treat Sunday as 7, Mon=1..Sun=7
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum); // set to nearest Thursday
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+};
 
 exports.getNewLoansReport = async (req, res) => {
   if (req.user.role !== 'hr' && req.user.role !== 'admin') {
@@ -412,10 +419,8 @@ exports.getRemittances = async (req, res) => {
       const [y, m, d] = period.split('-').map(Number);
       startDate = new Date(y, m - 1, d);
       endDate = new Date(y, m - 1, d + 1);
-      // Determine week number for this date
-      const oneJan = new Date(y, 0, 1);
-      const numberOfDays = Math.floor((startDate - oneJan) / (24 * 60 * 60 * 1000));
-      weekNumber = Math.ceil((startDate.getDay() + 1 + numberOfDays) / 7);
+      // Determine week number for this date using standard ISO week
+      weekNumber = getWeekNum(startDate);
     } else {
       // Monthly format e.g., 2026-05
       const [y, m] = period.split('-').map(Number);
@@ -572,38 +577,6 @@ exports.updateCompanyProfile = async (req, res) => {
   }
 };
 
-exports.getRemittances = async (req, res) => {
-  if (req.user.role !== 'hr' && req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Forbidden' });
-  }
-
-  try {
-    const loans = await prisma.loan.findMany({
-      where: {
-        company: req.user.role === 'hr' ? req.user.company : undefined,
-        status: { in: ['DISBURSED', 'ACTIVE', 'Active', 'Disbursed'] }
-      },
-      include: {
-        user: { select: { name: true, email: true, avatarUrl: true } }
-      }
-    });
-
-    res.json(loans.map(l => ({
-      id: l.reference,
-      loanReference: l.reference,
-      name: l.employeeName || l.user?.name || 'Unknown',
-      email: l.user?.email || 'N/A',
-      company: l.company,
-      amount: l.amount / 10,
-      date: l.updatedAt,
-      status: 'PAID',
-      metadata: l.metadata
-    })));
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: 'Server error' });
-  }
-};
 
 exports.uploadDeductions = async (req, res) => {
   if (req.user.role !== 'hr' && req.user.role !== 'admin') {
@@ -699,30 +672,58 @@ exports.uploadEmployeeList = async (req, res) => {
     const workbook = xlsx.read(req.file.buffer, { type: 'buffer' });
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    const rawData = xlsx.utils.sheet_to_json(worksheet);
+    const rows = xlsx.utils.sheet_to_json(worksheet, { header: 1 });
 
-    if (rawData.length === 0) {
+    if (rows.length === 0) {
       return res.status(400).json({ message: 'The uploaded file is empty.' });
     }
 
-    const employeeNumbersSet = new Set();
-    rawData.forEach(row => {
-      const keys = Object.keys(row);
-      const empNoKey = keys.find(k => 
-        k.toLowerCase().includes('employee') || 
-        k.toLowerCase().includes('emp') || 
-        k.toLowerCase().includes('id') || 
-        k.toLowerCase().includes('number') || 
-        k.toLowerCase().includes('code')
-      ) || keys[0];
+    let colIndex = 0;
+    let startRow = 0;
+    const firstRow = rows[0] || [];
+    const headerKeywords = ['employee', 'emp', 'id', 'number', 'code'];
 
-      if (empNoKey && row[empNoKey] !== undefined && row[empNoKey] !== null) {
-        const val = String(row[empNoKey]).trim();
-        if (val) {
-          employeeNumbersSet.add(val.toUpperCase());
+    // Find if any cell in the first row looks like a header keyword and does not contain digits
+    const foundHeaderIdx = firstRow.findIndex(cell => {
+      if (cell === undefined || cell === null) return false;
+      const str = String(cell).toLowerCase().trim();
+      const hasDigits = /\d/.test(str);
+      return !hasDigits && headerKeywords.some(kw => str.includes(kw));
+    });
+
+    if (foundHeaderIdx !== -1) {
+      colIndex = foundHeaderIdx;
+      startRow = 1; // Skip header row
+    } else {
+      // Check if the first row's cell 0 matches a known header name exactly or partially (and does not contain digits)
+      const firstVal = String(firstRow[0] || '').toLowerCase().trim();
+      const hasDigits = /\d/.test(firstVal);
+      const commonHeaders = [
+        'employee', 'emp', 'id', 'number', 'code', 'staff', 'roster', 
+        'employees', 'list', 'name', 'numbers', 'codes', 'emp_id', 
+        'employee_id', 'staff_id', 'staff id'
+      ];
+      const looksLikeHeader = !hasDigits && commonHeaders.some(h => firstVal === h || firstVal.includes(h));
+      if (looksLikeHeader) {
+        startRow = 1; // Skip header row
+      } else {
+        startRow = 0; // First row is data
+      }
+      colIndex = 0;
+    }
+
+    const employeeNumbersSet = new Set();
+    for (let i = startRow; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row) continue;
+      const val = row[colIndex];
+      if (val !== undefined && val !== null) {
+        const cleanVal = String(val).trim();
+        if (cleanVal) {
+          employeeNumbersSet.add(cleanVal.toUpperCase());
         }
       }
-    });
+    }
 
     const parsedEmployeeNumbers = Array.from(employeeNumbersSet);
 

@@ -44,6 +44,7 @@ model loan {
   employeeEmail String
   employeeName  String
   stage         String        @default("SUBMITTED")
+  disbursementType String     @default("Batch")
   metadata      Json?
   documentUrls  Json?
   kickbackRate  Float?
@@ -52,6 +53,9 @@ model loan {
   commissionAmount Float?      @default(0)
   discountAmount Float?        @default(0)
   installment   installment[]
+  interest_allocations interest_allocation[]
+  service_fee_allocations service_fee_allocation[]
+  settlement_quotes settlement_quote[]
   user          user          @relation(fields: [userId], references: [id], map: "Loan_userId_fkey")
 
   @@index([userId], map: "Loan_userId_fkey")
@@ -74,7 +78,7 @@ model user {
 
 model company {
   id                    Int      @id @default(autoincrement())
-  name                  String   @unique
+  name                  String   @unique(map: "company_name_unique")
   employees             Int      @default(0)
   status                String   @default("Active")
   creditLimit           String   @default("R 0")
@@ -135,5 +139,52 @@ model document {
   status       String   @default("Active")
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
+}
+
+model interest_allocation {
+  id        Int      @id @default(autoincrement())
+  loanId    Int
+  dueDate   DateTime
+  amount    Float
+  status    String   @default("UNEARNED") // EARNED or UNEARNED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  loan      loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([loanId])
+}
+
+model service_fee_allocation {
+  id        Int      @id @default(autoincrement())
+  loanId    Int
+  dueDate   DateTime
+  amount    Float
+  status    String   @default("UNEARNED") // EARNED or UNEARNED
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  loan      loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([loanId])
+}
+
+model settlement_quote {
+  id                 Int      @id @default(autoincrement())
+  quoteNumber        String   @unique
+  loanId             Int
+  customerName       String
+  outstandingBalance Float
+  unearnedInterest   Float
+  unearnedServiceFees Float
+  pipelineDeduction  Float    @default(0)
+  settlementSaving   Float
+  settlementAmount   Float
+  quoteDate          DateTime @default(now())
+  expiryDate         DateTime
+  status             String   @default("ACTIVE") // ACTIVE, EXPIRED, PAID
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  loan               loan     @relation(fields: [loanId], references: [id], onDelete: Cascade)
+
+  @@index([loanId])
 }
 

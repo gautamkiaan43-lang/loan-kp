@@ -6,5 +6,7 @@ const authenticateToken = require('../middleware/auth');
 router.post('/login', authController.login);
 router.get('/me', authenticateToken, authController.getMe);
 router.get('/companies/config/:name', authController.getCompanyConfig);
+router.post('/send-otp', authController.sendOtp);
+router.post('/complete-registration', authController.completeRegistration);
 
 module.exports = router;

@@ -6,10 +6,12 @@ async function main() {
     select: {
       id: true,
       name: true,
-      employeeNumbers: true
+      address: true,
+      latitude: true,
+      longitude: true
     }
   });
-  console.log('Companies and their Employee Numbers:');
+  console.log('Companies:');
   console.log(JSON.stringify(companies, null, 2));
 }
 

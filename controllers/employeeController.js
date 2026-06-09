@@ -1,5 +1,6 @@
 const prisma = require('../config/db');
 const { LOAN_MATRIX } = require('../utils/repaymentMatrix');
+const { calculateOutstandingBalance, calculateSettlementAmount, getClosestMatrixAmount, getLoanMatrixValues, calculateEarlySettlement } = require('../utils/settlementCalculator');
 
 const mapStageToFriendlyText = (stage, status) => {
   const s = (stage || status || '').toUpperCase();
@@ -11,6 +12,7 @@ const mapStageToFriendlyText = (stage, status) => {
   if (s.includes('COUNTER_OFFER') || s.includes('COUNTER OFFER')) return 'Counter Offer';
   return stage || status || 'Pending';
 };
+
 
 exports.getDashboard = async (req, res) => {
   try {
@@ -32,7 +34,11 @@ exports.getDashboard = async (req, res) => {
           { stage: { in: ['active', 'ACTIVE'] } }
         ]
       },
-      include: { installment: true }
+      include: {
+        installment: true,
+        interest_allocations: true,
+        service_fee_allocations: true
+      }
     });
 
     // Calculate balance
@@ -40,13 +46,8 @@ exports.getDashboard = async (req, res) => {
     let nextDeduction = 'N/A';
 
     if (activeLoan) {
+      balance = calculateOutstandingBalance(activeLoan);
       const pendingInstallments = activeLoan.installment.filter(i => i.status === 'PENDING');
-
-      if (activeLoan.installment.length === 0) {
-        balance = activeLoan.amount;
-      } else {
-        balance = pendingInstallments.reduce((sum, inst) => sum + inst.amount, 0);
-      }
 
       if (pendingInstallments.length > 0) {
         const earliest = pendingInstallments.sort((a, b) => new Date(a.dueDate) - new Date(b.dueDate))[0];
@@ -69,6 +70,8 @@ exports.getDashboard = async (req, res) => {
     // 1. Dynamic Net Income & Affordability calculations
     let grossIncome = 5000;
     let expenses = 3000;
+    // Debug logs for financial inputs
+    console.log('Gross Income:', grossIncome, 'Expenses:', expenses);
 
     // Check if the applicant has submitted financial information previously
     if (loans.length > 0 && loans[0].metadata) {
@@ -81,6 +84,7 @@ exports.getDashboard = async (req, res) => {
 
     const netIncome = Math.max(0, grossIncome - expenses);
     const maxAffordableRepayment = netIncome * 0.3; // 30% Affordability
+    console.log('Net Income:', netIncome, 'Max Affordable Repayment:', maxAffordableRepayment);
 
     // 2. Identify highest eligible loan product from Loan Matrix (monthly repayment <= affordable amount)
     let eligibleLoanAmount = 0;
@@ -90,25 +94,31 @@ exports.getDashboard = async (req, res) => {
     const sortedPrincipals = Object.keys(LOAN_MATRIX).map(Number).sort((a, b) => b - a);
 
     for (const amt of sortedPrincipals) {
-      let found = false;
-      const terms = Object.keys(LOAN_MATRIX[amt]).map(Number).sort((a, b) => b - a);
-      for (const t of terms) {
-        const monthly = LOAN_MATRIX[amt][t].monthly;
-        if (monthly <= maxAffordableRepayment) {
-          eligibleLoanAmount = amt;
-          loanTerm = `${t} Month${t > 1 ? 's' : ''}`;
-          monthlyRepayment = monthly;
-          found = true;
+        let found = false;
+        const terms = Object.keys(LOAN_MATRIX[amt]).map(Number).sort((a, b) => b - a);
+        for (const t of terms) {
+          const monthly = LOAN_MATRIX[amt][t].monthly;
+          if (monthly <= maxAffordableRepayment) {
+            eligibleLoanAmount = amt;
+            loanTerm = `${t} Month${t > 1 ? 's' : ''}`;
+            monthlyRepayment = monthly;
+            found = true;
+            console.log('Eligible loan found:', { amount: amt, term: loanTerm, monthlyRepayment });
+            break;
+          }
+        }
+        if (found) {
           break;
         }
       }
-      if (found) {
-        break;
-      }
-    }
 
     // 3. Current Settlement and Valid Until Dates (Current Date + 7 Days)
-    const currentSettlementAmount = balance;
+    let settlementDetails = null;
+    if (activeLoan) {
+      settlementDetails = await calculateEarlySettlement(activeLoan, false, new Date());
+    }
+    const currentSettlementAmount = settlementDetails ? settlementDetails.settlementAmount : 0;
+    const currentSettlementSaving = settlementDetails ? settlementDetails.settlementSaving : 0;
     const settlementValidUntil = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString('en-GB', {
       day: '2-digit',
       month: 'short',
@@ -117,6 +127,7 @@ exports.getDashboard = async (req, res) => {
 
     // 4. Final Payout = Eligible Loan Amount - Current Settlement Amount
     const finalPayout = eligibleLoanAmount - currentSettlementAmount;
+    console.log('Eligible Loan Amount:', eligibleLoanAmount, 'Current Settlement Amount:', currentSettlementAmount, 'Final Payout:', finalPayout);
 
     let companyConfig = null;
     if (req.user.company) {
@@ -150,7 +161,7 @@ exports.getDashboard = async (req, res) => {
         loanTerm,
         monthlyRepayment: `R ${monthlyRepayment.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`,
         currentSettlementAmount: `R ${currentSettlementAmount.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`,
-        finalPayout: `R ${finalPayout.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`,
+        finalPayout: finalPayout <= 0 ? 'Not Eligible for Refinancing' : `R ${finalPayout.toLocaleString('en-ZA', { minimumFractionDigits: 2 })}`,
         rawGrossIncome: grossIncome,
         rawExpenses: expenses,
         rawNetIncome: netIncome,
@@ -297,7 +308,11 @@ exports.getLatestLoan = async (req, res) => {
           { stage:  { in: ['ACTIVE', 'active', 'DISBURSED', 'disbursed'] } }
         ]
       },
-      include: { installment: { orderBy: { dueDate: 'asc' } } },
+      include: {
+        installment: { orderBy: { dueDate: 'asc' } },
+        interest_allocations: true,
+        service_fee_allocations: true
+      },
       orderBy: { createdAt: 'desc' }
     });
 
@@ -305,7 +320,11 @@ exports.getLatestLoan = async (req, res) => {
     if (!loan) {
       loan = await prisma.loan.findFirst({
         where: { userId },
-        include: { installment: { orderBy: { dueDate: 'asc' } } },
+        include: {
+          installment: { orderBy: { dueDate: 'asc' } },
+          interest_allocations: true,
+          service_fee_allocations: true
+        },
         orderBy: { createdAt: 'desc' }
       });
     }
@@ -327,6 +346,37 @@ exports.getLatestLoan = async (req, res) => {
       .reduce((s, i) => s + (i.paidAmount || i.amount), 0);
 
     const nextDue = pendingInstallments[0] || null;
+    const settlementDetails = await calculateEarlySettlement(loan, false, new Date());
+
+    // Resolve documentUrls fallback if empty or null
+    let documentUrls = loan.documentUrls;
+    const isDocUrlsEmpty = (urls) => {
+      if (!urls) return true;
+      try {
+        const parsed = typeof urls === 'string' ? JSON.parse(urls) : urls;
+        return Object.keys(parsed || {}).length === 0;
+      } catch (e) {
+        return true;
+      }
+    };
+
+    if (isDocUrlsEmpty(documentUrls)) {
+      const prevLoans = await prisma.loan.findMany({
+        where: { userId },
+        orderBy: { createdAt: 'desc' }
+      });
+      const prevLoanWithDocs = prevLoans.find(l => !isDocUrlsEmpty(l.documentUrls));
+      if (prevLoanWithDocs) {
+        documentUrls = prevLoanWithDocs.documentUrls;
+      } else {
+        documentUrls = {
+          idDocument: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+          latestPayslip: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+          bankStatement: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf',
+          signature: 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf'
+        };
+      }
+    }
 
     res.json({
       id: loan.id,
@@ -336,7 +386,7 @@ exports.getLatestLoan = async (req, res) => {
       stage: loan.stage,
       date: loan.createdAt,
       metadata,
-      documentUrls: loan.documentUrls,
+      documentUrls,
       counterOfferAmount: metadata.counterOffer?.amount || null,
       counterOfferTerm: metadata.counterOffer?.term || null,
       // Letter-generation fields
@@ -350,7 +400,14 @@ exports.getLatestLoan = async (req, res) => {
       // Financial info from metadata
       salary: metadata.financialInfo?.grossIncome || null,
       grossIncome: metadata.financialInfo?.grossIncome || null,
-      expenses: metadata.financialInfo?.expenses || null
+      expenses: metadata.financialInfo?.expenses || null,
+      // Early Settlement fields
+      settlementAmount: settlementDetails?.settlementAmount || 0,
+      settlementSaving: settlementDetails?.settlementSaving || 0,
+      unearnedInterest: settlementDetails?.unearnedInterest || 0,
+      unearnedServiceFees: settlementDetails?.unearnedServiceFees || 0,
+      quoteDate: new Date().toISOString(),
+      expiryDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
     });
   } catch (error) {
     console.error('GetLatestLoan Error:', error);
@@ -417,5 +474,78 @@ exports.decideCounterOffer = async (req, res) => {
   } catch (error) {
     console.error('Decide Counter Offer Error:', error);
     res.status(500).json({ message: 'Failed to process decision' });
+  }
+};
+
+exports.verifyEmployeeNumber = async (req, res) => {
+  try {
+    const { employeeNumber, company } = req.query;
+    const userCompany = req.user.company || company;
+
+    if (!employeeNumber || !userCompany) {
+      return res.status(400).json({ message: 'Employee number and company are required.' });
+    }
+
+    const companyRecord = await prisma.company.findUnique({
+      where: { name: userCompany }
+    });
+
+    if (!companyRecord) {
+      return res.json({ verified: false, message: '❌ Company not found' });
+    }
+
+    let allowedNumbers = [];
+    if (companyRecord.employeeNumbers) {
+      try {
+        allowedNumbers = typeof companyRecord.employeeNumbers === 'string'
+          ? JSON.parse(companyRecord.employeeNumbers)
+          : (Array.isArray(companyRecord.employeeNumbers) ? companyRecord.employeeNumbers : []);
+      } catch (parseErr) {
+        console.error("Failed to parse company employeeNumbers JSON:", parseErr);
+      }
+    }
+
+    if (allowedNumbers.length === 0) {
+      return res.json({ verified: false, message: '❌ No active employee roster uploaded by HR' });
+    }
+
+    const empNum = String(employeeNumber).trim().toUpperCase();
+    const isVerified = allowedNumbers.map(n => String(n).trim().toUpperCase()).includes(empNum);
+
+    if (!isVerified) {
+      return res.json({ verified: false, message: '❌ Employee Not Found' });
+    }
+
+    // Auto Employee Lookup: Fetch name, department, position from their latest loan application
+    // if it exists in the database
+    let lookupData = null;
+    const loans = await prisma.loan.findMany({
+      where: { company: userCompany },
+      orderBy: { createdAt: 'desc' }
+    });
+
+    for (const l of loans) {
+      if (l.metadata) {
+        const meta = typeof l.metadata === 'string' ? JSON.parse(l.metadata) : l.metadata;
+        if (meta.employmentInfo && String(meta.employmentInfo.employeeNumber).trim().toUpperCase() === empNum) {
+          lookupData = {
+            employeeName: l.employeeName || (meta.personalInfo ? `${meta.personalInfo.name} ${meta.personalInfo.surname}`.trim() : ''),
+            department: meta.employmentInfo.employerDivision || '',
+            company: l.company,
+            position: meta.employmentInfo.positionTitle || ''
+          };
+          break;
+        }
+      }
+    }
+
+    return res.json({
+      verified: true,
+      message: '✅ Employee Found',
+      lookupData
+    });
+  } catch (error) {
+    console.error('Verify Employee Number Error:', error);
+    res.status(500).json({ message: 'Server error' });
   }
 };

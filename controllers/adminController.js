@@ -597,14 +597,13 @@ exports.getApplicationById = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
-
 exports.updateApplicationStatus = async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Forbidden' });
   }
 
   const { id } = req.params;
-  const { stage } = req.body;
+  const { stage, disbursementType } = req.body;
 
   try {
     const updatedLoan = await prisma.loan.update({
@@ -612,6 +611,7 @@ exports.updateApplicationStatus = async (req, res) => {
       data: { 
         status: stage.toLowerCase(),
         stage: stage.toUpperCase(),
+        disbursementType: disbursementType || 'Batch',
         updatedAt: new Date()
       }
     });
@@ -622,9 +622,53 @@ exports.updateApplicationStatus = async (req, res) => {
         action: `LOAN_${stage.toUpperCase()}`,
         user: req.user.email,
         entityId: updatedLoan.reference,
-        note: `Loan status updated to ${stage} by admin.`
+        note: `Loan status updated to ${stage} by admin. (Disbursement: ${disbursementType || 'Batch'})`
       }
     });
+
+    // Automatically create a user record if loan is approved and user doesn't exist
+    if (stage && ['APPROVED', 'ACTIVE', 'DISBURSED', 'FINANCE_PENDING', 'ADMIN_APPROVAL'].includes(stage.toUpperCase())) {
+      const email = updatedLoan.employeeEmail;
+      if (email) {
+        const userExists = await prisma.user.findUnique({ where: { email } });
+        if (!userExists) {
+          console.log(`[updateApplicationStatus] Approved loan has no associated user in 'user' table. Creating user for ${email}...`);
+          const tempPassword = await bcrypt.hash(Math.random().toString(36), 10);
+          const newUser = await prisma.user.create({
+            data: {
+              email: email,
+              name: updatedLoan.employeeName || 'Unknown Employee',
+              company: updatedLoan.company || 'Unknown',
+              password: tempPassword,
+              role: 'employee',
+              status: 'Active',
+              updatedAt: new Date()
+            }
+          });
+          
+          // Link this loan and other loans with this email to the new user ID
+          await prisma.loan.updateMany({
+            where: { employeeEmail: email },
+            data: { userId: newUser.id }
+          });
+          
+          console.log(`[updateApplicationStatus] Automatically created user ID ${newUser.id} for ${email} and linked loans.`);
+        }
+      }
+    }
+
+    if (disbursementType === 'Immediate' && stage.toUpperCase() === 'APPROVED') {
+      const { disburseLoanInternal } = require('./financeController');
+      console.log(`[updateApplicationStatus] Immediate disbursement triggered for loan Ref: ${updatedLoan.reference}`);
+      const disburseResult = await disburseLoanInternal(updatedLoan.reference, req.user.name || req.user.email);
+      if (!disburseResult.success) {
+        console.error(`[updateApplicationStatus] Immediate disbursement failed for loan Ref: ${updatedLoan.reference}:`, disburseResult.message);
+      } else {
+        updatedLoan.status = disburseResult.loan.status;
+        updatedLoan.stage = disburseResult.loan.stage;
+        updatedLoan.updatedAt = disburseResult.loan.updatedAt;
+      }
+    }
 
     res.json(updatedLoan);
   } catch (error) {
@@ -632,7 +676,6 @@ exports.updateApplicationStatus = async (req, res) => {
     res.status(500).json({ message: 'Failed to update status' });
   }
 };
-
 exports.getAuditLogs = async (req, res) => {
   if (req.user.role !== 'admin') {
     return res.status(403).json({ message: 'Forbidden' });

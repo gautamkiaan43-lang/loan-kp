@@ -210,7 +210,7 @@ exports.getGovernanceReport = async (req, res) => {
           { name: 'Other', value: 20 }
         ],
         metrics: {
-          totalFees: (totalCollected._sum.amount || 0) * 0.05, 
+          totalFees: Math.round(((totalCollected._sum.amount || 0) * 0.05) * 1000), 
           companyPenetration: Math.min(100, penetration).toFixed(1) + '%',
           employeePenetration: totalApproxCount > 0 ? (employeePenetrationVal.toFixed(1) + '%') : '0.0%',
           avgLoanAmount: 'R ' + Math.round(loans.length > 0 ? loans.reduce((s, l) => s + l.amount, 0) / loans.length : 0).toLocaleString()
@@ -228,7 +228,7 @@ exports.getGovernanceReport = async (req, res) => {
       social: {
         pdiParticipation: pdiRate.toFixed(1) + '%',
         pdiLoanCount: pdiCount || Math.round(loans.length * 0.8),
-        employerPenetration: `${activeCompanyNames.size} / ${totalPossibleCompanies}`,
+        employerPenetration: `${activeRegisteredCompanies.size} / ${registeredCompanies.length}`,
         employeePenetration: totalApproxCount > 0 ? (employeePenetrationVal.toFixed(1) + '%') : '0.0%'
       }
     });
@@ -281,3 +281,91 @@ exports.getAgeAnalysis = async (req, res) => {
     res.status(500).json({ message: 'Failed to fetch age analysis' });
   }
 };
+
+exports.getStats = async (req, res) => {
+  const { company, range } = req.query;
+  try {
+    const loanFilter = {};
+    if (company && company !== 'All Companies') {
+      loanFilter.company = company;
+    }
+
+    // 1. Fetch relevant loans
+    const loans = await prisma.loan.findMany({
+      where: loanFilter,
+      include: {
+        installment: true
+      }
+    });
+
+    // Calculate totalPortfolioValue: Sum of loan amounts for active/disbursed loans
+    const activeLoans = loans.filter(l => 
+      ['ACTIVE', 'DISBURSED', 'PAID'].includes(l.stage) || 
+      ['active', 'disbursed', 'paid'].includes(l.status.toLowerCase())
+    );
+
+    const totalPortfolioValue = activeLoans.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+
+    // activeClients: count of unique userIds in activeLoans
+    const activeClientIds = new Set(activeLoans.map(l => l.userId));
+    const activeClients = activeClientIds.size;
+
+    // totalCollected: Sum of paidAmount from all paid installments of loans matching the company filter
+    const allInstallments = await prisma.installment.findMany({
+      where: {
+        loan: loanFilter,
+        status: { in: ['PAID', 'RECEIVED'] }
+      }
+    });
+    
+    // YTD calculation (current calendar year)
+    const currentYear = new Date().getFullYear();
+    const ytdInstallments = allInstallments.filter(inst => {
+      const date = new Date(inst.updatedAt || inst.dueDate);
+      return date.getFullYear() === currentYear;
+    });
+
+    const totalCollected = ytdInstallments.reduce((sum, inst) => sum + (Number(inst.paidAmount) || 0), 0);
+
+    // 4. Trends (Disbursement Velocity) - Monthly amount of loans disbursed this year
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const thisYearLoans = loans.filter(l => {
+      const date = new Date(l.createdAt);
+      return date.getFullYear() === currentYear;
+    });
+
+    const trends = months.map((m, i) => {
+      const monthLoans = thisYearLoans.filter(l => new Date(l.createdAt).getMonth() === i);
+      const amount = monthLoans.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+      return { name: m, amount };
+    });
+
+    // 5. Status Distribution (Portfolio Allocation)
+    const statusCounts = {};
+    loans.forEach(l => {
+      const status = l.status ? (l.status.charAt(0).toUpperCase() + l.status.slice(1).toLowerCase()) : 'Submitted';
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+    });
+
+    const statusDistribution = Object.entries(statusCounts).map(([name, value]) => ({
+      name,
+      value
+    }));
+
+    if (statusDistribution.length === 0) {
+      statusDistribution.push({ name: 'Active', value: 0 });
+    }
+
+    res.json({
+      totalPortfolioValue,
+      activeClients,
+      totalCollected,
+      trends,
+      statusDistribution
+    });
+  } catch (error) {
+    console.error('Management Stats Error:', error);
+    res.status(500).json({ message: 'Failed to fetch management stats' });
+  }
+};
+

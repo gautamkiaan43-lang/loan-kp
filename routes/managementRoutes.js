@@ -10,5 +10,6 @@ router.get('/backups/history', managementController.getBackupHistory);
 router.post('/backups/trigger', managementController.triggerBackup);
 router.get('/reports/governance', managementController.getGovernanceReport);
 router.get('/age-analysis', managementController.getAgeAnalysis);
+router.get('/stats', managementController.getStats);
 
 module.exports = router;
