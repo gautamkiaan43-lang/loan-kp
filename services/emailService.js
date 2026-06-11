@@ -6,6 +6,8 @@ const prisma = require('../config/db');
 // Create reusable transporter configuration based on env variables
 function getTransporter() {
   const host = process.env.SMTP_HOST;
+  const hostIpv4 = process.env.SMTP_HOST_IPV4;
+  const finalHost = hostIpv4 || host;
   const port = parseInt(process.env.SMTP_PORT || '587');
   const user = process.env.SMTP_USERNAME || process.env.SMTP_USER;
   const pass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS;
@@ -13,15 +15,15 @@ function getTransporter() {
   const ipv4Option = { family: 4 };
   const timeoutMs = parseInt(process.env.SMTP_TIMEOUT_MS || '15000'); // 15 s default
 
-  // If developer explicitly disables real SMTP, use JSON transport (no network)
+  // Optional dev mode: skip real SMTP
   if (process.env.SMTP_FAKE === 'true') {
     console.log('[EmailService] Using JSON transport (SMTP_FAKE enabled)');
     return nodemailer.createTransport({ jsonTransport: true, ...ipv4Option, connectionTimeout: timeoutMs });
   }
 
-  if (host && user && pass) {
+  if (finalHost && user && pass) {
     const transporter = nodemailer.createTransport({
-      host,
+      host: finalHost,
       port,
       secure: port === 465 || encryption === 'SSL',
       auth: { user, pass },
@@ -30,7 +32,7 @@ function getTransporter() {
       tls: { rejectUnauthorized: false }
     });
     console.log('[EmailService] Using real SMTP transport →', {
-      host,
+      host: finalHost,
       port,
       user,
       encryption: encryption || 'TLS',
