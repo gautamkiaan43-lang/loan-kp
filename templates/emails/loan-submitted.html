@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loan Application Submitted</title>
+  <style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f8fafc; margin: 0; padding: 20px; }
+    .container { max-width: 600px; margin: 0 auto; background-color: #ffffff; border-radius: 16px; border: 1px solid #e2e8f0; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05); }
+    .header { background: linear-gradient(135deg, #2563eb, #1e3a8a); padding: 40px 30px; text-align: center; color: #ffffff; }
+    .header h1 { margin: 0; font-size: 28px; font-weight: 800; }
+    .content { padding: 40px 30px; line-height: 1.6; color: #334155; }
+    .loan-details { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 12px; padding: 20px; margin: 20px 0; }
+    .loan-details table { width: 100%; border-collapse: collapse; }
+    .loan-details td { padding: 8px 0; font-size: 14px; }
+    .loan-details td.label { color: #64748b; font-weight: 600; width: 40%; }
+    .loan-details td.value { color: #0f172a; font-weight: 700; text-align: right; }
+    .footer { padding: 20px 30px; background-color: #f1f5f9; text-align: center; font-size: 11px; color: #64748b; border-top: 1px solid #e2e8f0; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Application Submitted</h1>
+    </div>
+    <div class="content">
+      <h3 style="margin-top:0; color:#0f172a;">Hello {{name}},</h3>
+      <p>Thank you for submitting your loan application to Lenni. We have successfully received it and it is currently being verified.</p>
+      <p>Please review your application summary below:</p>
+      
+      <div class="loan-details">
+        <table>
+          <tr>
+            <td class="label">Loan Reference</td>
+            <td class="value">{{reference}}</td>
+          </tr>
+          <tr>
+            <td class="label">Requested Amount</td>
+            <td class="value">R {{amount}}</td>
+          </tr>
+          <tr>
+            <td class="label">Company</td>
+            <td class="value">{{company}}</td>
+          </tr>
+        </table>
+      </div>
+
+      <p><strong>Next Steps:</strong> Your application will undergo HR verification and credit evaluation. You can monitor the live progress of your application by logging into your Lenni Secure Portal.</p>
+    </div>
+    <div class="footer">
+      This is an automated workflow notification from Lenni Loan Management System. Please do not reply.<br>
+      &copy; {{year}} Lenni. All rights reserved.
+    </div>
+  </div>
+</body>
+</html>

@@ -96,4 +96,20 @@ app.get('/health', (req, res) => {
 // Start Server
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  
+  // Start email queue background processor
+  try {
+    const { processEmailQueue } = require('./services/emailService');
+    console.log("📨 Starting Background Email Queue Processor (5s interval)...");
+    
+    // Run once on startup
+    processEmailQueue();
+    
+    // Set interval
+    setInterval(async () => {
+      await processEmailQueue();
+    }, 5000);
+  } catch (workerErr) {
+    console.error("❌ Failed to initialize background email queue processor:", workerErr);
+  }
 });

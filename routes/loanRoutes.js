@@ -16,6 +16,7 @@ router.post('/apply', uploadDocument.fields([
 ]), loanController.apply);
 
 router.get('/', loanController.getAllLoans);
+router.get('/:id/pdf-data', loanController.getFullApplicationData);
 router.get('/:id', loanController.getLoanById);
 
 module.exports = router;

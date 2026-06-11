@@ -27,4 +27,11 @@ router.get('/applications/:id', adminController.getApplicationById);
 router.patch('/applications/:id/status', adminController.updateApplicationStatus);
 router.get('/audit-logs', adminController.getAuditLogs);
 
+// Email Configuration & Analytics endpoints
+router.get('/email-settings/stats', adminController.getEmailSettingsStats);
+router.get('/email-settings/logs', adminController.getEmailLogs);
+router.get('/email-settings/queue', adminController.getEmailQueue);
+router.post('/email-settings/verify-connection', adminController.verifySmtpConnection);
+router.post('/email-settings/send-test-email', adminController.sendTestEmail);
+
 module.exports = router;

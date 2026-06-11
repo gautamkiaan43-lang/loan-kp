@@ -242,6 +242,24 @@ exports.disburseLoanInternal = async (loanId, operatorNameOrEmail) => {
       return updated;
     });
 
+    // Send email notification for payout (disbursal)
+    try {
+      const emailService = require('../services/emailService');
+      const payoutHtml = emailService.populateTemplate('notification', {
+        message: `Your loan application (Ref: ${updatedLoan.reference}) for R ${updatedLoan.amount.toLocaleString()} has been successfully paid out and is now active. Installments are scheduled according to your payroll cycle.`
+      });
+      await emailService.queueEmail({
+        to: updatedLoan.employeeEmail,
+        subject: `Lenni Loan Paid Out & Activated - Ref ${updatedLoan.reference}`,
+        html: payoutHtml,
+        text: `Your loan ${updatedLoan.reference} has been paid out and is now active.`,
+        emailType: 'LOAN_PAID_OUT',
+        relatedRecord: updatedLoan.id
+      });
+    } catch (emailErr) {
+      console.error('[financeController.disburseLoanInternal] Payout email failed:', emailErr);
+    }
+
     return { success: true, loan: updatedLoan };
   } catch (error) {
     console.error('disburseLoanInternal Error:', error);
@@ -832,6 +850,24 @@ exports.executeSettlement = async (req, res) => {
       }
     });
 
+    // Send email notification for settlement completed
+    try {
+      const emailService = require('../services/emailService');
+      const settleHtml = emailService.populateTemplate('notification', {
+        message: `Your loan application (Ref: ${targetLoan.reference}) has been successfully settled for R ${amount} and is now CLOSED. Thank you for your support.`
+      });
+      await emailService.queueEmail({
+        to: targetLoan.employeeEmail,
+        subject: `Lenni Loan Settled & Closed - Ref ${targetLoan.reference}`,
+        html: settleHtml,
+        text: `Your loan ${targetLoan.reference} has been settled and closed.`,
+        emailType: 'LOAN_SETTLED',
+        relatedRecord: targetLoan.id
+      });
+    } catch (emailErr) {
+      console.error('[financeController.executeSettlement] Email trigger failed:', emailErr);
+    }
+
     res.json({ message: 'Settlement executed successfully' });
   } catch (error) {
     console.error('Execute Settlement Error:', error);
@@ -1174,14 +1210,40 @@ exports.createSettlementQuote = async (req, res) => {
       include: {
         loan: {
           select: {
+            id: true,
             reference: true,
             employeeName: true,
+            employeeEmail: true,
             company: true,
             status: true
           }
         }
       }
     });
+
+    // Send email notification for settlement quote
+    try {
+      const emailService = require('../services/emailService');
+      const quoteHtml = emailService.populateTemplate('loan-settlement', {
+        name: loan.employeeName,
+        reference: loan.reference,
+        quoteNumber: quote.quoteNumber,
+        outstanding: String(quote.outstandingBalance),
+        savings: String(quote.settlementSaving),
+        amount: String(quote.settlementAmount),
+        expiry: quote.expiryDate.toISOString().slice(0, 10)
+      });
+      await emailService.queueEmail({
+        to: loan.employeeEmail,
+        subject: `Lenni Settlement Quotation Generated - Quote ${quote.quoteNumber}`,
+        html: quoteHtml,
+        text: `A settlement quotation ${quote.quoteNumber} has been generated for your loan.`,
+        emailType: 'LOAN_SETTLEMENT_QUOTE',
+        relatedRecord: loan.id
+      });
+    } catch (emailErr) {
+      console.error('[financeController.createSettlementQuote] Email failed:', emailErr);
+    }
 
     res.json(quote);
   } catch (error) {

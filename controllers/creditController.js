@@ -178,6 +178,39 @@ exports.makeDecision = async (req, res) => {
       }
     });
 
+    // Send email notification
+    try {
+      const emailService = require('../services/emailService');
+      if (isApprove) {
+        const approveHtml = emailService.populateTemplate('notification', {
+          message: `Your loan application (Ref: ${updatedLoan.reference}) for R ${updatedLoan.amount.toLocaleString()} has been approved by the Credit Assessment team and is awaiting final administrative sign-off.`
+        });
+        await emailService.queueEmail({
+          to: updatedLoan.employeeEmail,
+          subject: `Lenni Loan Status: Pending Admin Approval - Ref ${updatedLoan.reference}`,
+          html: approveHtml,
+          text: `Your loan application ${updatedLoan.reference} has been approved by Credit and is pending final Admin sign-off.`,
+          emailType: 'LOAN_CREDIT_APPROVED',
+          relatedRecord: updatedLoan.id
+        });
+      } else {
+        const rejectHtml = emailService.populateTemplate('loan-rejected', {
+          name: updatedLoan.employeeName,
+          reference: updatedLoan.reference
+        });
+        await emailService.queueEmail({
+          to: updatedLoan.employeeEmail,
+          subject: `Lenni Loan Application Declined - Ref ${updatedLoan.reference}`,
+          html: rejectHtml,
+          text: `Your loan application ${updatedLoan.reference} has been declined.`,
+          emailType: 'LOAN_REJECTED',
+          relatedRecord: updatedLoan.id
+        });
+      }
+    } catch (emailErr) {
+      console.error('[creditController.makeDecision] Email trigger failed:', emailErr);
+    }
+
     // Log the action
     await prisma.auditlog.create({
       data: {
@@ -333,6 +366,24 @@ exports.makeCounterOffer = async (req, res) => {
         updatedAt: new Date()
       }
     });
+
+    // Send email notification for Counter Offer
+    try {
+      const emailService = require('../services/emailService');
+      const counterHtml = emailService.populateTemplate('notification', {
+        message: `Our Credit team has reviewed your application (Ref: ${updatedLoan.reference}) and proposed a counter-offer: R ${amountVal.toLocaleString()} over ${term} months (${freq}). Log into your portal to review and accept the counter-offer.`
+      });
+      await emailService.queueEmail({
+        to: updatedLoan.employeeEmail,
+        subject: `Lenni Loan Status: Counter Offer Proposed - Ref ${updatedLoan.reference}`,
+        html: counterHtml,
+        text: `A counter offer of R ${amountVal} has been proposed for your loan application ${updatedLoan.reference}.`,
+        emailType: 'LOAN_COUNTER_OFFER',
+        relatedRecord: updatedLoan.id
+      });
+    } catch (emailErr) {
+      console.error('[creditController.makeCounterOffer] Email trigger failed:', emailErr);
+    }
 
     // Log the action
     await prisma.auditlog.create({

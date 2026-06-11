@@ -375,6 +375,39 @@ exports.updateVerificationStatus = async (req, res) => {
       data: updateData
     });
 
+    // Send email notifications
+    try {
+      const emailService = require('../services/emailService');
+      if (action === 'REJECT') {
+        const html = emailService.populateTemplate('loan-rejected', {
+          name: updatedLoan.employeeName,
+          reference: updatedLoan.reference
+        });
+        await emailService.queueEmail({
+          to: updatedLoan.employeeEmail,
+          subject: `Lenni Loan Application Declined - Ref ${updatedLoan.reference}`,
+          html,
+          text: `Your loan application ${updatedLoan.reference} has been declined.`,
+          emailType: 'LOAN_REJECTED',
+          relatedRecord: updatedLoan.id
+        });
+      } else if (action === 'APPROVE') {
+        const html = emailService.populateTemplate('notification', {
+          message: `Your loan application (Ref: ${updatedLoan.reference}) has been successfully verified by HR and is now under review by our Credit Assessment team.`
+        });
+        await emailService.queueEmail({
+          to: updatedLoan.employeeEmail,
+          subject: `Lenni Loan Status: Under Review - Ref ${updatedLoan.reference}`,
+          html,
+          text: `Your loan application ${updatedLoan.reference} has been verified and is under review.`,
+          emailType: 'LOAN_UNDER_REVIEW',
+          relatedRecord: updatedLoan.id
+        });
+      }
+    } catch (emailErr) {
+      console.error('[hrController.updateVerificationStatus] Email notification failed:', emailErr);
+    }
+
     // Log action
     await prisma.auditlog.create({
       data: {

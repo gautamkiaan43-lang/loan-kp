@@ -207,6 +207,14 @@ exports.updateUser = async (req, res) => {
   const { name, email, role, company, password, status } = req.body;
 
   try {
+    const oldUser = await prisma.user.findUnique({
+      where: { id: parseInt(id) }
+    });
+
+    if (!oldUser) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
     const updateData = {};
     if (name) updateData.name = name;
     if (email) updateData.email = email;
@@ -221,6 +229,30 @@ exports.updateUser = async (req, res) => {
       where: { id: parseInt(id) },
       data: updateData
     });
+
+    // Send email notification on status change
+    if (status !== undefined && oldUser.status !== status) {
+      try {
+        const emailService = require('../services/emailService');
+        const subject = status === 'Active' ? 'Lenni Account Activated' : 'Lenni Account Suspended';
+        const templateMessage = status === 'Active' 
+          ? `Your Lenni portal user account (${updated.email}) has been activated. You can now log in to the portal.`
+          : `Your Lenni portal user account (${updated.email}) has been suspended. Please contact system administration for assistance.`;
+        
+        const html = emailService.populateTemplate('notification', { message: templateMessage });
+        await emailService.queueEmail({
+          to: updated.email,
+          subject,
+          html,
+          text: templateMessage,
+          emailType: status === 'Active' ? 'ACCOUNT_ACTIVATION' : 'ACCOUNT_SUSPENSION',
+          relatedRecord: updated.id
+        });
+      } catch (emailErr) {
+        console.error('[adminController.updateUser] Status email failed:', emailErr);
+      }
+    }
+
     const { password: _, ...sanitized } = updated;
     res.json(sanitized);
   } catch (error) {
@@ -776,3 +808,135 @@ exports.uploadSignature = async (req, res) => {
     res.status(500).json({ message: 'Failed to upload signature' });
   }
 };
+
+exports.getEmailSettingsStats = async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  try {
+    const totalSent = await prisma.email_log.count({ where: { deliveryStatus: 'SENT' } });
+    const totalFailed = await prisma.email_log.count({ where: { deliveryStatus: 'FAILED' } });
+    const queuePending = await prisma.email_queue.count({ where: { status: 'PENDING' } });
+    const queueProcessing = await prisma.email_queue.count({ where: { status: 'PROCESSING' } });
+    const queueFailed = await prisma.email_queue.count({ where: { status: 'FAILED' } });
+
+    res.json({
+      totalSent,
+      totalFailed,
+      queuePending,
+      queueProcessing,
+      queueFailed,
+      smtpHost: process.env.SMTP_HOST || 'smtp.gmail.com',
+      smtpUser: process.env.SMTP_USERNAME || 'lms@lenni.co.za',
+      fromAddress: process.env.MAIL_FROM_ADDRESS || 'lms@lenni.co.za'
+    });
+  } catch (error) {
+    console.error('getEmailSettingsStats Error:', error);
+    res.status(500).json({ message: 'Failed to fetch email settings stats' });
+  }
+};
+
+exports.getEmailLogs = async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const { search, limit = 50, offset = 0 } = req.query;
+
+  try {
+    const where = {};
+    if (search) {
+      where.OR = [
+        { recipient: { contains: search } },
+        { subject: { contains: search } },
+        { emailType: { contains: search } },
+        { deliveryStatus: { contains: search } }
+      ];
+    }
+
+    const logs = await prisma.email_log.findMany({
+      where,
+      orderBy: { timestamp: 'desc' },
+      take: parseInt(limit),
+      skip: parseInt(offset)
+    });
+
+    const totalCount = await prisma.email_log.count({ where });
+
+    res.json({ logs, totalCount });
+  } catch (error) {
+    console.error('getEmailLogs Error:', error);
+    res.status(500).json({ message: 'Failed to fetch email logs' });
+  }
+};
+
+exports.getEmailQueue = async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const { limit = 50, offset = 0 } = req.query;
+
+  try {
+    const queue = await prisma.email_queue.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: parseInt(limit),
+      skip: parseInt(offset)
+    });
+
+    const totalCount = await prisma.email_queue.count();
+
+    res.json({ queue, totalCount });
+  } catch (error) {
+    console.error('getEmailQueue Error:', error);
+    res.status(500).json({ message: 'Failed to fetch email queue' });
+  }
+};
+
+exports.verifySmtpConnection = async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  try {
+    const emailService = require('../services/emailService');
+    const result = await emailService.verifySmtpConnection();
+    res.json(result);
+  } catch (error) {
+    console.error('verifySmtpConnection Error:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+exports.sendTestEmail = async (req, res) => {
+  if (req.user.role !== 'admin') {
+    return res.status(403).json({ message: 'Forbidden' });
+  }
+
+  const { recipient } = req.body;
+  if (!recipient) {
+    return res.status(400).json({ message: 'Recipient is required.' });
+  }
+
+  try {
+    const emailService = require('../services/emailService');
+    const html = emailService.populateTemplate('notification', {
+      message: 'This is a test email sent from the Lenni Loan Management System Admin Email Settings interface. If you receive this, your SMTP connection is fully operational!'
+    });
+
+    const result = await emailService.sendEmailImmediate({
+      to: recipient,
+      subject: 'Lenni LMS - Test Email Connection',
+      html,
+      text: 'This is a test email from Lenni LMS.',
+      emailType: 'TEST_EMAIL'
+    });
+
+    res.json({ success: true, message: 'Test email dispatched successfully.', messageId: result.messageId });
+  } catch (error) {
+    console.error('sendTestEmail Error:', error);
+    res.status(500).json({ success: false, message: 'Failed to send test email: ' + error.message });
+  }
+};
+

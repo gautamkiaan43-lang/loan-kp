@@ -17,59 +17,6 @@ exports.apply = async (req, res) => {
     const lReq = typeof loanRequest === 'string' ? JSON.parse(loanRequest) : loanRequest;
     const agmt = typeof agreement === 'string' ? JSON.parse(agreement) : agreement;
 
-    // Check backend eligibility
-    const existingLoans = await prisma.loan.findMany({
-      where: { userId: req.user.id },
-      include: { installment: true }
-    });
-
-    const inProgressStatuses = [
-      'New', 'Submitted', 'HR Pending', 'HR Approved', 'Credit Pending', 
-      'Under Review', 'On Hold', 'Need More Info', 'Admin Approval', 
-      'Approved', 'Counter Offer', 'Processing', 'ADMIN_APPROVAL_PENDING', 'FINANCE_PENDING'
-    ].map(s => s.toLowerCase());
-
-    const hasInProgress = existingLoans.some(l => 
-      inProgressStatuses.includes((l.status || '').toLowerCase()) || 
-      inProgressStatuses.includes((l.stage || '').toLowerCase())
-    );
-
-    // Check backend eligibility (Bypassed for testing / client request)
-    /*
-    if (hasInProgress) {
-      return res.status(400).json({
-        message: 'You already have a loan application in progress. You are only allowed to apply for one loan at a time.'
-      });
-    }
-
-    const activeStatuses = ['active', 'disbursed', 'in arrears', 'recovery'].map(s => s.toLowerCase());
-    const activeLoans = existingLoans.filter(l => 
-      activeStatuses.includes((l.status || '').toLowerCase()) || 
-      activeStatuses.includes((l.stage || '').toLowerCase())
-    );
-
-    for (const l of activeLoans) {
-      const installments = l.installment || [];
-      if (installments.length === 0) {
-        return res.status(400).json({
-          message: 'You have an active loan, but repayment calculations are pending. You cannot apply for a new loan at this time.'
-        });
-      }
-      
-      const totalAmount = installments.reduce((sum, inst) => sum + inst.amount, 0);
-      const totalPaid = installments
-        .filter(inst => ['paid', 'received', 'completed'].includes((inst.status || '').toLowerCase()))
-        .reduce((sum, inst) => sum + (inst.paidAmount || inst.amount), 0);
-        
-      if (totalAmount === 0 || (totalPaid / totalAmount) < 0.5) {
-        const percentPaid = totalAmount > 0 ? Math.round((totalPaid / totalAmount) * 100) : 0;
-        return res.status(400).json({
-          message: `You currently have an active loan and have only repaid ${percentPaid}% of it. You are eligible for a new loan only after 50% of your current loan has been paid.`
-        });
-      }
-    }
-    */
-
     const documentUrls = {};
     if (!req.files || !req.files['latestPayslip'] || !req.files['signature'] || !req.files['idDocument'] || !req.files['bankStatement']) {
       return res.status(400).json({ 
@@ -77,48 +24,18 @@ exports.apply = async (req, res) => {
       });
     }
 
-    const loanAmt = parseFloat(lReq.amount);
-    if (isNaN(loanAmt) || loanAmt < 400 || loanAmt > 8000 || loanAmt % 400 !== 0) {
-      return res.status(400).json({
-        message: 'Loan amount must be between R400 and R8000 in increments of R400.'
-      });
-    }
-
     Object.keys(req.files).forEach(key => {
       documentUrls[key] = req.files[key][0].path;
     });
 
-    // 1. Verify employee active status
-    const dbUser = await prisma.user.findUnique({
-      where: { id: req.user.id }
-    });
-    if (!dbUser || dbUser.status !== 'Active') {
-      return res.status(403).json({
-        message: 'Your user account is not active. Loan applications are blocked.'
-      });
-    }
-
-    // 2. Verify employee belongs to company
-    if (dbUser.company !== eInfo.employerName) {
-      return res.status(400).json({
-        message: `Company mismatch: You are registered under "${dbUser.company}" but trying to apply under "${eInfo.employerName}".`
-      });
-    }
-
-    // 3. Fetch company
+    // Fetch company defaults for rates
     const company = await prisma.company.findUnique({
       where: { name: eInfo.employerName || 'Unknown' }
     });
 
-    if (!company) {
-      return res.status(400).json({
-        message: `Company "${eInfo.employerName}" not found.`
-      });
-    }
-
-    // 4. Verify employee number against company roster (strict check)
-    let allowedNumbers = [];
-    if (company.employeeNumbers) {
+    // Verify employee number against company roster if one has been uploaded
+    if (company && company.employeeNumbers) {
+      let allowedNumbers = [];
       try {
         allowedNumbers = typeof company.employeeNumbers === 'string'
           ? JSON.parse(company.employeeNumbers)
@@ -126,27 +43,22 @@ exports.apply = async (req, res) => {
       } catch (parseErr) {
         console.error("Failed to parse company employeeNumbers JSON:", parseErr);
       }
+
+      if (allowedNumbers && allowedNumbers.length > 0) {
+        const empNum = String(eInfo.employeeNumber || '').trim().toUpperCase();
+        const isVerified = allowedNumbers.map(n => String(n).trim().toUpperCase()).includes(empNum);
+        
+        if (!isVerified) {
+          return res.status(400).json({
+            message: `Employee number "${eInfo.employeeNumber}" is not verified for ${eInfo.employerName}. Please check your number or contact your HR department.`
+          });
+        }
+      }
     }
 
-    if (allowedNumbers.length === 0) {
-      return res.status(400).json({
-        message: `No active employee roster found for ${eInfo.employerName}. Loan applications are blocked until your HR uploads the employee roster.`
-      });
-    }
-
-    const empNum = String(eInfo.employeeNumber || '').trim().toUpperCase();
-    const isVerified = allowedNumbers.map(n => String(n).trim().toUpperCase()).includes(empNum);
-    
-    if (!isVerified) {
-      return res.status(400).json({
-        message: `Employee number "${eInfo.employeeNumber}" is not verified/found for ${eInfo.employerName}. Please check your number or contact your HR department.`
-      });
-    }
-
-    const reference = lReq.reference || `LMS-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`;
     const loan = await prisma.loan.create({
       data: {
-        reference,
+        reference: `LMS-${Math.floor(Math.random() * 10000).toString().padStart(4, '0')}`,
         amount: parseFloat(lReq.amount),
         userId: req.user.id,
         company: eInfo.employerName || 'Unknown',
@@ -180,16 +92,9 @@ exports.apply = async (req, res) => {
 
 exports.getAllLoans = async (req, res) => {
   try {
-    const query = {
-      orderBy: { createdAt: 'desc' },
-      include: { installment: true }
-    };
-
-    if (req.user && req.user.role === 'employee') {
-      query.where = { userId: req.user.id };
-    }
-
-    const loans = await prisma.loan.findMany(query);
+    const loans = await prisma.loan.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
     res.json(loans);
   } catch (error) {
     console.error('Fetch All Loans Error:', error);
@@ -210,22 +115,85 @@ exports.getLoanById = async (req, res) => {
       return res.status(404).json({ message: 'Application not found' });
     }
 
-    // Retrieve company details for the signatory information
-    let companyRecord = null;
-    if (loan.company) {
-      companyRecord = await prisma.company.findUnique({
-        where: { name: loan.company }
-      });
-    }
-
-    const loanWithCompany = {
-      ...loan,
-      companyRecord
-    };
-
-    res.json(loanWithCompany);
+    res.json(loan);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
+  }
+};
+
+// New endpoint to fetch full data for PDF generation
+exports.getFullApplicationData = async (req, res) => {
+  try {
+    const { id } = req.params; // loan ID
+    // Fetch loan with related metadata and documents
+    const loan = await prisma.loan.findUnique({
+      where: { id: Number(id) },
+      include: {
+        user: true,
+        // metadata stored as JSON in the loan record
+        // no explicit relation needed, will be accessed via loan.metadata
+      },
+    });
+
+    if (!loan) {
+      return res.status(404).json({ message: 'Loan application not found' });
+    }
+
+    // Extract nested data safely
+    const metadata = loan.metadata || {};
+    const personalInfo = metadata.personalInfo || {};
+    const employmentInfo = metadata.employmentInfo || {};
+    const financialInfo = metadata.financialInfo || {};
+    const loanRequest = metadata.loanRequest || {};
+    const agreement = metadata.agreement || {};
+
+    // Company info (may be stored in separate table)
+    const company = await prisma.company.findUnique({
+      where: { name: loan.company },
+    });
+
+    // Build a flat object for the front‑end PDF generator
+    const payload = {
+      loanId: loan.id,
+      reference: loan.reference,
+      status: loan.status,
+      amount: loan.amount,
+      // Applicant details
+      applicantName: loan.employeeName || `${personalInfo.name || ''} ${personalInfo.surname || ''}`.trim(),
+      applicantEmail: loan.employeeEmail,
+      applicantIdNumber: personalInfo.idNumber || '',
+      applicantMobile: personalInfo.mobile || '',
+      applicantCompany: loan.company,
+      // Employment details
+      division: employmentInfo.division || '',
+      empType: employmentInfo.employmentType || '',
+      contractEndDate: employmentInfo.contractEndDate || '',
+      dateEngaged: employmentInfo.dateEngaged || '',
+      employeeNumber: employmentInfo.employeeNumber || '',
+      jobTitle: employmentInfo.jobTitle || '',
+      // Financial details
+      salary: financialInfo.salary || 0,
+      bankName: financialInfo.bankName || '',
+      bankAccountNumber: financialInfo.accountNumber || '',
+      // Loan request details
+      loanAmount: loanRequest.amount || loan.amount,
+      loanTerm: loanRequest.term || '',
+      loanReason: loanRequest.purpose || '',
+      // Personal extra fields
+      maritalStatus: personalInfo.maritalStatus || '',
+      pdi: personalInfo.pdi || false,
+      gender: personalInfo.gender || '',
+      disability: personalInfo.disability || '',
+      language: personalInfo.languageOfChoice || 'English',
+      // Signatures / document URLs
+      signature: loan.documentUrls?.signature || null,
+      companySignature: loan.documentUrls?.companySignature || null,
+    };
+
+    res.json({ application: loan, payload });
+  } catch (err) {
+    console.error('[getFullApplicationData] error:', err);
+    res.status(500).json({ message: 'Failed to retrieve application data' });
   }
 };

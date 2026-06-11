@@ -188,3 +188,44 @@ model settlement_quote {
   @@index([loanId])
 }
 
+model otp {
+  id        Int      @id @default(autoincrement())
+  email     String
+  otpHash   String
+  purpose   String
+  expiresAt DateTime
+  used      Boolean  @default(false)
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model email_log {
+  id            Int      @id @default(autoincrement())
+  recipient     String
+  subject       String
+  emailType     String
+  relatedRecord String?
+  deliveryStatus String
+  errorDetails  String?  @db.Text
+  sender        String
+  timestamp     DateTime @default(now())
+}
+
+model email_queue {
+  id            Int      @id @default(autoincrement())
+  recipient     String
+  subject       String
+  emailType     String
+  html          String   @db.LongText
+  text          String?  @db.Text
+  attachments   Json?
+  status        String   @default("PENDING") // PENDING, PROCESSING, SENT, FAILED
+  attempts      Int      @default(0)
+  lastError     String?  @db.Text
+  relatedRecord String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+}
+
+
