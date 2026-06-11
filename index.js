@@ -7,6 +7,16 @@ const morgan = require('morgan');
 dotenv.config();
 
 // Auto-run Prisma migrations/generate on startup
+const { verifySmtpConnection } = require('./services/emailService');
+(async () => {
+  try {
+    const res = await verifySmtpConnection();
+    console.log('[SMTP Startup Check]', res);
+  } catch (e) {
+    console.error('[SMTP Startup Check] failed', e);
+  }
+})();
+
 try {
   const { execSync } = require('child_process');
   console.log("==================================================");
@@ -89,8 +99,27 @@ app.use('/api/documents', documentRoutes);
 app.use('/api/support', supportRoutes);
 
 // Health Check
+// Health Check
 app.get('/health', (req, res) => {
   res.json({ status: 'OK', timestamp: new Date() });
+});
+
+// 👉 Debug endpoint – send a quick test email to the configured sender address
+app.get('/debug/send-test-email', async (req, res) => {
+  try {
+    const { sendEmailImmediate } = require('./services/emailService');
+    const to = process.env.MAIL_FROM_ADDRESS || 'test@example.com';
+    const result = await sendEmailImmediate({
+      to,
+      subject: '🚀 OTP‑Delivery Test',
+      html: '<p>If you see this, the SMTP transport is working.</p>',
+      text: 'SMTP test',
+    });
+    res.json({ success: true, result });
+  } catch (err) {
+    console.error('🔴 Test email error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
 });
 
 // Start Server

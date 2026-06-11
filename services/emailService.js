@@ -11,7 +11,7 @@ function getTransporter() {
   const pass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS;
   
   if (host && user && pass) {
-    return nodemailer.createTransport({
+    const transporter = nodemailer.createTransport({
       host,
       port,
       secure: port === 465, // true for 465, false for 587 / other ports
@@ -23,8 +23,11 @@ function getTransporter() {
         rejectUnauthorized: false
       }
     });
+    console.log('[EmailService] Using real SMTP transport →', { host, port, user });
+    return transporter;
   } else {
     // Development fallback: JSON Transport to console
+    console.log('[EmailService] Using JSON transport (dev mode) – real emails will NOT be sent');
     return nodemailer.createTransport({
       jsonTransport: true
     });
