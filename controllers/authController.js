@@ -232,11 +232,10 @@ exports.sendOtp = async (req, res) => {
       }
     });
 
-    // Populate and send template email
     const html = emailService.populateTemplate('otp', { otp });
     const text = `Your Lenni Secure Portal activation verification OTP code is: ${otp}. It is valid for 10 minutes.`;
-
-    await emailService.sendEmailImmediate({
+    // Queue the OTP email instead of sending synchronously
+    await emailService.queueEmail({
       to: email,
       subject: 'Lenni Portal Activation OTP Code',
       html,
