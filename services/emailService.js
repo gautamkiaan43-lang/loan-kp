@@ -9,28 +9,37 @@ function getTransporter() {
   const port = parseInt(process.env.SMTP_PORT || '587');
   const user = process.env.SMTP_USERNAME || process.env.SMTP_USER;
   const pass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS;
-  
+  const encryption = (process.env.SMTP_ENCRYPTION || '').toUpperCase();
+  const ipv4Option = { family: 4 };
+  const timeoutMs = parseInt(process.env.SMTP_TIMEOUT_MS || '15000'); // 15 s default
+
+  // If developer explicitly disables real SMTP, use JSON transport (no network)
+  if (process.env.SMTP_FAKE === 'true') {
+    console.log('[EmailService] Using JSON transport (SMTP_FAKE enabled)');
+    return nodemailer.createTransport({ jsonTransport: true, ...ipv4Option, connectionTimeout: timeoutMs });
+  }
+
   if (host && user && pass) {
     const transporter = nodemailer.createTransport({
       host,
       port,
-      secure: port === 465, // true for 465, false for 587 / other ports
-      auth: {
-        user,
-        pass,
-      },
-      tls: {
-        rejectUnauthorized: false
-      }
+      secure: port === 465 || encryption === 'SSL',
+      auth: { user, pass },
+      ...ipv4Option,
+      connectionTimeout: timeoutMs,
+      tls: { rejectUnauthorized: false }
     });
-    console.log('[EmailService] Using real SMTP transport →', { host, port, user });
+    console.log('[EmailService] Using real SMTP transport →', {
+      host,
+      port,
+      user,
+      encryption: encryption || 'TLS',
+      timeoutMs
+    });
     return transporter;
   } else {
-    // Development fallback: JSON Transport to console
     console.log('[EmailService] Using JSON transport (dev mode) – real emails will NOT be sent');
-    return nodemailer.createTransport({
-      jsonTransport: true
-    });
+    return nodemailer.createTransport({ jsonTransport: true, ...ipv4Option, connectionTimeout: timeoutMs });
   }
 }
 
