@@ -198,10 +198,16 @@ async function processEmailQueue() {
 
     for (const job of pendingJobs) {
       // 1. Claim job (PROCESSING) to prevent concurrency duplicates
-      await prisma.email_queue.update({
-        where: { id: job.id },
-        data: { status: 'PROCESSING' }
-      });
+      // Claim the job safely. Use updateMany to avoid error if the job was already handled.
+        const claimResult = await prisma.email_queue.updateMany({
+          where: { id: job.id, status: { in: ['PENDING', 'FAILED'] } },
+          data: { status: 'PROCESSING' }
+        });
+        if (claimResult.count === 0) {
+          // Job might have been claimed elsewhere; skip processing.
+          console.warn(`[Email Queue Worker] Job ${job.id} could not be claimed (already processed). Skipping.`);
+          continue;
+        }
 
       let attachmentsParsed = [];
       try {
