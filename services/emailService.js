@@ -4,10 +4,10 @@ const path = require('path');
 const prisma = require('../config/db');
 
 // Create reusable transporter configuration based on env variables
-function getTransporter() {
+async function getTransporter() {
   const host = process.env.SMTP_HOST;
   const hostIpv4 = process.env.SMTP_HOST_IPV4;
-  const finalHost = hostIpv4 || host;
+  let finalHost = hostIpv4 || host;
   const port = parseInt(process.env.SMTP_PORT || '587');
   const user = process.env.SMTP_USERNAME || process.env.SMTP_USER;
   const pass = process.env.SMTP_PASSWORD || process.env.SMTP_PASS;
@@ -22,21 +22,43 @@ function getTransporter() {
   }
 
   if (finalHost && user && pass) {
+    let resolvedHost = finalHost;
+    let servername = undefined;
+
+    // Resolve hostname to IPv4 dynamically to avoid IPv6 ENETUNREACH errors on cloud servers like Railway
+    if (!/^[0-9.]+$/.test(finalHost) && !finalHost.includes(':')) {
+      try {
+        const dns = require('dns').promises;
+        const addresses = await dns.resolve4(finalHost);
+        if (addresses && addresses.length > 0) {
+          resolvedHost = addresses[0];
+          servername = finalHost;
+          console.log(`[EmailService] Resolved SMTP host "${finalHost}" to IPv4 "${resolvedHost}"`);
+        }
+      } catch (dnsErr) {
+        console.warn(`[EmailService] Failed to resolve hostname "${finalHost}" to IPv4:`, dnsErr.message);
+      }
+    }
+
     const transporter = nodemailer.createTransport({
-      host: finalHost,
+      host: resolvedHost,
       port,
       secure: port === 465 || encryption === 'SSL',
       auth: { user, pass },
       ...ipv4Option,
       connectionTimeout: timeoutMs,
-      tls: { rejectUnauthorized: false }
+      tls: { 
+        rejectUnauthorized: false,
+        ...(servername ? { servername } : {})
+      }
     });
     console.log('[EmailService] Using real SMTP transport →', {
-      host: finalHost,
+      host: resolvedHost,
       port,
       user,
       encryption: encryption || 'TLS',
-      timeoutMs
+      timeoutMs,
+      servername
     });
     return transporter;
   } else {
@@ -53,7 +75,7 @@ async function sendEmailImmediate({ to, subject, html, text, attachments, emailT
   const fromName = process.env.MAIL_FROM_NAME || 'Lenni Loan Management System';
   const sender = `"${fromName}" <${fromAddress}>`;
 
-  const transporter = getTransporter();
+  const transporter = await getTransporter();
 
   const mailOptions = {
     from: sender,
@@ -261,8 +283,8 @@ async function processEmailQueue() {
  * Tests connection settings to the SMTP server.
  */
 async function verifySmtpConnection() {
-  const transporter = getTransporter();
   try {
+    const transporter = await getTransporter();
     await transporter.verify();
     return { success: true, message: 'SMTP Connection verified successfully.' };
   } catch (error) {

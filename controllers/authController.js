@@ -127,7 +127,6 @@ exports.getCompanyConfig = async (req, res) => {
 };
 
 const crypto = require('crypto');
-const dns = require('dns').promises;
 const emailService = require('../services/emailService');
 
 exports.sendOtp = async (req, res) => {
@@ -137,69 +136,25 @@ exports.sendOtp = async (req, res) => {
     return res.status(400).json({ message: 'Email address is required.' });
   }
 
-  const trimmedEmail = email.trim();
-
-  // 1. Format/Regex validation (RFC 5322 compliant)
-  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
-  if (!emailRegex.test(trimmedEmail)) {
-    return res.status(400).json({ message: 'Invalid email address format.' });
-  }
-
-  const domain = trimmedEmail.split('@')[1].toLowerCase();
-
-  // 2. Block common typo domains
-  const typoDomains = [
-    'gmial.com', 'gmal.com', 'gamil.com', 'gmaill.com', 'gamil.co', 'gmael.com', 'gmil.com', 'gmaile.com', 'gmai.com',
-    'yaho.com', 'yahu.com', 'yhoo.com', 'yaho.co', 'yho.com',
-    'hotail.com', 'hotml.com', 'hotmaill.com', 'hotmal.com',
-    'msn.co', 'msn.co.za', 'outlook.co'
-  ];
-  if (typoDomains.includes(domain)) {
-    const suggestion = domain.startsWith('g') ? 'gmail.com' : domain.startsWith('y') ? 'yahoo.com' : domain.startsWith('h') ? 'hotmail.com' : 'something else';
-    return res.status(400).json({ message: `Invalid email domain. Did you mean ${suggestion}?` });
-  }
-
-  // 3. Block temporary / disposable domains
-  const tempDomains = [
-    'mailinator.com', 'tempmail.com', '10minutemail.com', 'yopmail.com', 'guerrillamail.com',
-    'dispostable.com', 'getairmail.com', 'trashmail.com', 'sharklasers.com', 'guerrillamailblock.com',
-    'guerrillamail.net', 'guerrillamail.org', 'guerrillamail.biz', 'grr.la', 'guerrillamail.de',
-    'bccto.me', 'tempmail.net', 'temp-mail.org', 'disposable.com', 'maildrop.cc'
-  ];
-  if (tempDomains.includes(domain)) {
-    return res.status(400).json({ message: 'Temporary or disposable email addresses are not allowed.' });
-  }
-
-  // 4. DNS MX record validation to confirm domain exists and receives emails
   try {
-    const mxRecords = await dns.resolveMx(domain);
-    if (!mxRecords || mxRecords.length === 0) {
-      return res.status(400).json({ message: 'The email domain does not have valid MX records and cannot receive mail.' });
-    }
-  } catch (dnsErr) {
-    console.warn(`[DNS MX Lookup Failed] for domain ${domain}:`, dnsErr.message);
-    return res.status(400).json({ message: 'The email domain does not exist or is not configured to receive mail.' });
-  }
-
-  try {
-    console.log(`[sendOtp] Request received for email: ${trimmedEmail}`);
+    console.log(`[sendOtp] Request received for email: ${email}`);
     let user = await prisma.user.findUnique({
-      where: { email: trimmedEmail }
+      where: { email }
     });
 
     if (!user) {
-      console.log(`[sendOtp] Email "${trimmedEmail}" not found in user table. Searching loan table...`);
+      console.log(`[sendOtp] Email "${email}" not found in user table. Searching loan table...`);
       const loan = await prisma.loan.findFirst({
-        where: { employeeEmail: trimmedEmail }
+        where: { employeeEmail: email }
       });
 
       const tempPassword = await bcrypt.hash(Math.random().toString(36), 10);
 
       if (loan) {
-        console.log(`[sendOtp] Found loan application (Ref: ${loan.reference}) for ${trimmedEmail}. Automatically creating active user...`);
+        console.log(`[sendOtp] Found loan application (Ref: ${loan.reference}) for ${email}. Automatically creating active user...`);
         user = await prisma.user.create({
           data: {
-            email: trimmedEmail,
+            email: email,
             name: loan.employeeName || 'Unknown Employee',
             company: loan.company || 'Unknown',
             password: tempPassword,
@@ -211,17 +166,17 @@ exports.sendOtp = async (req, res) => {
 
         // Update all loans with this email to point to this new user's ID
         await prisma.loan.updateMany({
-          where: { employeeEmail: trimmedEmail },
+          where: { employeeEmail: email },
           data: { userId: user.id }
         });
 
         console.log(`[sendOtp] Automatically created user ID ${user.id} and linked all associated loans.`);
       } else {
-        console.log(`[sendOtp] Email "${trimmedEmail}" not found in user or loan tables. Automatically creating a new user record for portal activation...`);
+        console.log(`[sendOtp] Email "${email}" not found in user or loan tables. Automatically creating a new user record for portal activation...`);
         user = await prisma.user.create({
           data: {
-            email: trimmedEmail,
-            name: trimmedEmail.split('@')[0],
+            email: email,
+            name: email.split('@')[0],
             company: 'Unknown',
             password: tempPassword,
             role: 'employee',
@@ -239,7 +194,7 @@ exports.sendOtp = async (req, res) => {
     const oneMinuteAgo = new Date(Date.now() - 60 * 1000);
     const recentOtp = await prisma.otp.findFirst({
       where: {
-        email: trimmedEmail,
+        email,
         purpose: 'REGISTRATION',
         createdAt: { gte: oneMinuteAgo }
       }
@@ -257,7 +212,7 @@ exports.sendOtp = async (req, res) => {
     // Save to DB
     await prisma.otp.create({
       data: {
-        email: trimmedEmail,
+        email,
         otpHash,
         purpose: 'REGISTRATION',
         expiresAt: expires
@@ -265,13 +220,13 @@ exports.sendOtp = async (req, res) => {
     });
 
     console.log(`==========================================`);
-    console.log(`🔑 OTP generated for ${trimmedEmail}: ${otp}`);
+    console.log(`🔑 OTP generated for ${email}: ${otp}`);
     console.log(`==========================================`);
 
     await prisma.auditlog.create({
       data: {
         action: 'OTP_GENERATED',
-        user: trimmedEmail,
+        user: email,
         note: `OTP generated for secure portal activation.`,
         entityId: 'REGISTRATION'
       }
@@ -279,21 +234,15 @@ exports.sendOtp = async (req, res) => {
 
     const html = emailService.populateTemplate('otp', { otp });
     const text = `Your Lenni Secure Portal activation verification OTP code is: ${otp}. It is valid for 10 minutes.`;
-
-    // 5. Send SMTP email immediately and synchronously to ensure successful delivery
-    try {
-      await emailService.sendEmailImmediate({
-        to: trimmedEmail,
-        subject: 'Lenni Portal Activation OTP Code',
-        html,
-        text,
-        emailType: 'AUTH_OTP',
-        relatedRecord: 'REGISTRATION'
-      });
-    } catch (deliveryErr) {
-      console.error(`[SMTP Delivery Failed] for ${trimmedEmail}:`, deliveryErr.message);
-      return res.status(400).json({ message: 'Verification failed: Failed to deliver OTP email. Please ensure the email address is correct, active and capable of receiving emails.' });
-    }
+    // Queue the OTP email instead of sending synchronously
+    await emailService.queueEmail({
+      to: email,
+      subject: 'Lenni Portal Activation OTP Code',
+      html,
+      text,
+      emailType: 'AUTH_OTP',
+      relatedRecord: 'REGISTRATION'
+    });
 
     res.json({ message: 'Verification OTP has been sent to your email address.' });
   } catch (error) {
