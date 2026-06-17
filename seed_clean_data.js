@@ -3,7 +3,7 @@ const prisma = new PrismaClient();
 
 const REAL_COMPANIES = [
   { name: 'LMS Financial', approxTotalEmployees: 50, creditLimit: 'R 2M', employees: 5 },
-  { name: 'Lenni Global', approxTotalEmployees: 250, creditLimit: 'R 10M', employees: 150 },
+  { name: 'Lenni Global', approxTotalEmployees: 200, creditLimit: 'R 10M', employees: 0 },
   { name: 'TechFlow SA', approxTotalEmployees: 30, creditLimit: 'R 1M', employees: 8 },
   { name: 'Global Tech Solutions', approxTotalEmployees: 40, creditLimit: 'R 3M', employees: 0 },
   { name: 'Acme Corp', approxTotalEmployees: 100, creditLimit: 'R 5M', employees: 0 },
@@ -36,7 +36,9 @@ async function main() {
   // 2. Ensure real companies exist in database
   for (const c of REAL_COMPANIES) {
     const existing = await prisma.company.findUnique({ where: { name: c.name } });
-    const employeeNumbers = Array.from({ length: 5 }, (_, i) => `${c.name.slice(0, 3).toUpperCase()}-${1000 + i}`);
+    const employeeNumbers = c.name === 'Lenni Global'
+      ? ['FGDF', 'LEN-1000', 'LEN-1001', 'LEN-1002', 'LEN-1003', 'LEN-1004']
+      : Array.from({ length: 5 }, (_, i) => `${c.name.slice(0, 3).toUpperCase()}-${1000 + i}`);
 
     if (existing) {
       await prisma.company.update({
@@ -122,18 +124,29 @@ async function main() {
         metadata: JSON.stringify(metadata)
       }
     });
+    // Add small delay to prevent remote connection drops
+    await new Promise(resolve => setTimeout(resolve, 150));
   }
   console.log('Updated loans with assigned companies, reasons, and frequencies.');
 
-  // 5. Update the registered employees count dynamically for each company
+  // 5. Update the registered employees count dynamically for each company based on active loans
   const dbCompanies = await prisma.company.findMany();
   for (const c of dbCompanies) {
-    const userCount = await prisma.user.count({ where: { company: c.name } });
-    // For Lenni Global, let's keep the mock registered count high as seeded, or use user count if available
-    const finalEmployeesCount = c.name === 'Lenni Global' ? 150 : userCount;
+    const activeUserCount = await prisma.user.count({
+      where: {
+        company: c.name,
+        loan: {
+          some: {
+            status: {
+              in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED']
+            }
+          }
+        }
+      }
+    });
     await prisma.company.update({
       where: { id: c.id },
-      data: { employees: finalEmployeesCount }
+      data: { employees: activeUserCount }
     });
   }
   console.log('Updated employees count dynamically.');

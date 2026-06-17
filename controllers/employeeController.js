@@ -195,8 +195,10 @@ exports.getStatements = async (req, res) => {
       const statusUpper = (loan.status || '').toUpperCase();
       const stageUpper = (loan.stage || '').toUpperCase();
 
-      const isDisbursed = ['ACTIVE', 'DISBURSED', 'PAID', 'CLOSED'].includes(statusUpper)
-        || ['ACTIVE', 'DISBURSED', 'PAID', 'CLOSED'].includes(stageUpper);
+      const isDisbursed = ['ACTIVE', 'DISBURSED', 'PAID']
+    .some(x => statusUpper.includes(x)) ||
+    ['ACTIVE', 'DISBURSED', 'PAID']
+    .some(x => stageUpper.includes(x));
 
       const loanTransactions = [];
 

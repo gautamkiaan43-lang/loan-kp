@@ -334,3 +334,53 @@ exports.completeRegistration = async (req, res) => {
     res.status(500).json({ message: 'Failed to complete registration.' });
   }
 };
+
+exports.verifyEmployee = async (req, res) => {
+  try {
+    const company = req.query.company || req.query.companyName;
+    const employeeNumber = req.query.employeeNumber || req.query.employeeNo;
+
+    if (!company || !employeeNumber) {
+      return res.status(400).json({ verified: false, message: '❌ Company name and employee number are required.' });
+    }
+
+    const companyRecord = await prisma.company.findUnique({
+      where: { name: company }
+    });
+
+    if (!companyRecord) {
+      return res.status(404).json({ verified: false, message: '❌ Company not found.' });
+    }
+
+    let allowedNumbers = [];
+    if (companyRecord.employeeNumbers) {
+      try {
+        allowedNumbers = typeof companyRecord.employeeNumbers === 'string'
+          ? JSON.parse(companyRecord.employeeNumbers)
+          : (Array.isArray(companyRecord.employeeNumbers) ? companyRecord.employeeNumbers : []);
+      } catch (parseErr) {
+        console.error("Failed to parse company employeeNumbers JSON:", parseErr);
+      }
+    }
+
+    if (allowedNumbers.length === 0) {
+      return res.status(400).json({ verified: false, message: '❌ No active employee roster uploaded by HR' });
+    }
+
+    const empNum = String(employeeNumber).trim().toUpperCase();
+    const isVerified = allowedNumbers.map(n => String(n).trim().toUpperCase()).includes(empNum);
+
+    if (!isVerified) {
+      return res.status(400).json({ verified: false, message: '❌ Employee Not Found' });
+    }
+
+    return res.json({
+      verified: true,
+      message: '✅ Employee Found'
+    });
+  } catch (error) {
+    console.error('Verify Employee Error:', error);
+    res.status(500).json({ verified: false, message: 'Server error: ' + error.message });
+  }
+};
+

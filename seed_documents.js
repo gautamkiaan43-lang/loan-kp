@@ -30,7 +30,7 @@ async function main() {
       fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
       fileType: "application/pdf",
       category: "Contract",
-      uploadedBy: "compliance@lenni.com",
+      uploadedBy: "compliance@lenni.co.za",
       companyName: dummyCompany,
       employeeName: dummyEmployee,
       loanRef: dummyLoanRef,
@@ -74,7 +74,7 @@ async function main() {
       fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
       fileType: "application/pdf",
       category: "Contract",
-      uploadedBy: "legal@lenni.com",
+      uploadedBy: "legal@lenni.co.za",
       companyName: "TechFlow SA",
       employeeName: "Corporate HR Team",
       loanRef: null,
@@ -96,7 +96,7 @@ async function main() {
       fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
       fileType: "application/pdf",
       category: "Other",
-      uploadedBy: "system@lenni.com",
+      uploadedBy: "system@lenni.co.za",
       companyName: "Lenni (Pty) Ltd",
       employeeName: "Standard Template",
       loanRef: null,
@@ -107,7 +107,7 @@ async function main() {
       fileUrl: "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
       fileType: "application/pdf",
       category: "Employment Verification",
-      uploadedBy: "compliance@lenni.com",
+      uploadedBy: "compliance@lenni.co.za",
       companyName: dummyCompany,
       employeeName: dummyEmployee,
       loanRef: dummyLoanRef,
@@ -139,7 +139,7 @@ async function main() {
     },
     {
       action: "CREDIT_REVIEW",
-      user: "credit@lenni.com",
+      user: "credit@lenni.co.za",
       note: `Credit assessment approved. Affordability index 1.8. Risk score classified as LOW.`,
       entityId: dummyLoanRef,
       createdAt: new Date(now.getTime() - 1000 * 60 * 60 * 24 * 3) // 3 days ago
@@ -153,14 +153,14 @@ async function main() {
     },
     {
       action: "FINANCE_DISBURSE",
-      user: "finance@lenni.com",
+      user: "finance@lenni.co.za",
       note: `Loan disbursed successfully via Standard Bank Corporate EFT. Reference: EFT-92019482.`,
       entityId: dummyLoanRef,
       createdAt: new Date(now.getTime() - 1000 * 60 * 60 * 24 * 1) // 1 day ago
     },
     {
       action: "RECOVERY_FORMAL_DEMAND",
-      user: "recovery@lenni.com",
+      user: "recovery@lenni.co.za",
       note: `Sent automatic Formal Demand Letter via email and WhatsApp. 31 days overdue reached.`,
       entityId: dummyLoanRef,
       createdAt: new Date(now.getTime() - 1000 * 60 * 30) // 30 mins ago

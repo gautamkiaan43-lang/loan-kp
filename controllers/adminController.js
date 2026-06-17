@@ -300,7 +300,18 @@ exports.getAllCompanies = async (req, res) => {
 
     // Add user-based companies
     for (const uc of userCompanies) {
-      const employeeCount = await prisma.user.count({ where: { company: uc.company } });
+      const employeeCount = await prisma.user.count({
+        where: {
+          company: uc.company,
+          loan: {
+            some: {
+              status: {
+                in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED']
+              }
+            }
+          }
+        }
+      });
       companyMap.set(uc.company, {
         id: uc.company,
         name: uc.company,
@@ -312,7 +323,18 @@ exports.getAllCompanies = async (req, res) => {
 
     // Overwrite/Add explicit companies
     for (const ec of explicitCompanies) {
-      const employeeCount = await prisma.user.count({ where: { company: ec.name } });
+      const employeeCount = await prisma.user.count({
+        where: {
+          company: ec.name,
+          loan: {
+            some: {
+              status: {
+                in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED']
+              }
+            }
+          }
+        }
+      });
       companyMap.set(ec.name, {
         id: ec.id,
         name: ec.name,

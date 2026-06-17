@@ -89,16 +89,13 @@ exports.getProfile = async (req, res) => {
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     const latestLoan = user.loan[0];
-    const loanMetadata = latestLoan?.metadata || {};
-    
-    // Prefer user.phone, then fallback to loan metadata
-    const displayPhone = user.phone || loanMetadata.personalInfo?.phone || '';
+    const loanMetadata = typeof latestLoan?.metadata === 'string' ? JSON.parse(latestLoan.metadata) : (latestLoan?.metadata || {});
 
     res.json({
       name: user.name,
-      email: user.email,
+      email: loanMetadata.personalInfo?.email || user.email || '',
       company: user.company || latestLoan?.company || 'N/A',
-      phone: displayPhone,
+      phone: loanMetadata.personalInfo?.phone || user.phone || '',
       avatarUrl: user.avatarUrl,
       employeeReference: loanMetadata.employmentInfo?.employeeId || `LMS-${user.id.toString().padStart(5, '0')}`,
       memberSince: user.createdAt.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' }),

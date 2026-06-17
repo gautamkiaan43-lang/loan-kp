@@ -1,5 +1,6 @@
 const prisma = require('../config/db');
 const xlsx = require('xlsx');
+const { calculateEarlySettlement } = require('../utils/settlementCalculator');
 
 const getWeekNum = (date) => {
   const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
@@ -501,21 +502,36 @@ exports.getRemittances = async (req, res) => {
       return true;
     });
 
-    res.json(filteredInstallments.map(i => ({
-      id: i.reference,
-      loanReference: i.loan.reference,
-      name: (i.loan.employeeName && i.loan.employeeName !== 'Unknown')
-        ? i.loan.employeeName
-        : (i.loan.metadata?.personalInfo?.name ? `${i.loan.metadata.personalInfo.name} ${i.loan.metadata.personalInfo.surname}` : (i.loan.user?.name || 'Anonymous')),
-      email: i.loan.employeeEmail || i.loan.user?.email || 'Unknown',
-      avatarUrl: i.loan.user?.avatarUrl,
-      company: i.loan.company,
-      amount: i.amount,
-      date: i.dueDate,
-      status: i.status,
-      metadata: i.loan.metadata,
-      note: i.note
-    })));
+// Compute settlement values for each loan (once per loan to avoid duplicate work)
+    const settlementCache = {};
+    const now = new Date();
+    const settlementPromises = filteredInstallments.map(async (i) => {
+      const loanId = i.loan.id;
+      if (!settlementCache[loanId]) {
+        settlementCache[loanId] = await calculateEarlySettlement(i.loan, false, now);
+      }
+      const settlement = settlementCache[loanId];
+      return {
+        id: i.reference,
+        loanReference: i.loan.reference,
+        name: (i.loan.employeeName && i.loan.employeeName !== 'Unknown')
+          ? i.loan.employeeName
+          : (i.loan.metadata?.personalInfo?.name ? `${i.loan.metadata.personalInfo.name} ${i.loan.metadata.personalInfo.surname}` : (i.loan.user?.name || 'Anonymous')),
+        email: i.loan.employeeEmail || i.loan.user?.email || 'Unknown',
+        avatarUrl: i.loan.user?.avatarUrl,
+        company: i.loan.company,
+        amount: i.amount,
+        date: i.dueDate,
+        status: i.status,
+        metadata: i.loan.metadata,
+        note: i.note,
+        actualBalance: settlement.outstandingBalance,
+        pipelineBalance: settlement.pipelineDeduction,
+        settlementAmount: settlement.settlementAmount
+      };
+    });
+    const responseData = await Promise.all(settlementPromises);
+    res.json(responseData);
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: 'Server error' });
@@ -534,13 +550,24 @@ exports.getCompanyProfile = async (req, res) => {
   }
 
   try {
+    const employeeCount = await prisma.user.count({
+      where: {
+        company: companyName,
+        loan: {
+          some: {
+            status: {
+              in: ['Active', 'ACTIVE', 'Disbursed', 'DISBURSED']
+            }
+          }
+        }
+      }
+    });
+
     let company = await prisma.company.findUnique({
       where: { name: companyName }
     });
 
-    // Auto-create company record if it only exists as a user field
     if (!company) {
-      const employeeCount = await prisma.user.count({ where: { company: companyName } });
       company = await prisma.company.create({
         data: {
           name: companyName,
@@ -548,6 +575,11 @@ exports.getCompanyProfile = async (req, res) => {
           status: 'Active',
           creditLimit: 'R 0'
         }
+      });
+    } else {
+      company = await prisma.company.update({
+        where: { id: company.id },
+        data: { employees: employeeCount }
       });
     }
 
